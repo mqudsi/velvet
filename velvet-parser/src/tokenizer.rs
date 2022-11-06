@@ -57,6 +57,9 @@ pub enum TokenType {
     EndOfLine,
     Pipe,
     Redirection,
+    /// Significant whitespace, e.g. one or more leading spaces at the start of a command
+    Whitespace,
+    Comment,
 }
 
 #[derive(Debug)]
@@ -68,8 +71,7 @@ pub enum TokenizerError {
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum TokenizerState {
     None,
-    SingleQuote,
-    DoubleQuote,
+    PendingChar(u8),
     VariableName,
     Bracket,
     Subshell,
@@ -121,8 +123,8 @@ impl TokenizerState {
     #[inline]
     fn terminates_on(&self, c: u8) -> bool {
         match (c, self) {
-            (b'"', TokenizerState::DoubleQuote) => true,
-            (b'\\', TokenizerState::SingleQuote) => true,
+            // Handles ending single-quoted/double-quoted contexts
+            (c, TokenizerState::PendingChar(c2)) => c == *c2,
             (b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'_', TokenizerState::VariableName) => false,
             (_, TokenizerState::VariableName) => true,
             (b' ' | b'\n' | b';', TokenizerState::None) => true,
@@ -137,7 +139,7 @@ impl TokenizerState {
         match (c, self) {
             (b'"', TokenizerState::None) => false,
             (b'\'', TokenizerState::None) => false,
-            (b'$', _) => *self == TokenizerState::SingleQuote,
+            (b'$', TokenizerState::PendingChar(b'"')) => false,
             (b'(', TokenizerState::None) => false,
             (b'[', TokenizerState::None) => false,
             (b'{', TokenizerState::None) => false,
@@ -250,13 +252,13 @@ impl<'a> Tokenizer<'a> {
                 if self.index != start {
                     return Ok(make_token!());
                 }
-                self.state = TokenizerState::DoubleQuote;
+                self.state = TokenizerState::PendingChar(b'"');
                 skip_char = true;
             } else if c == b'\'' {
                 if self.index != start {
                     return Ok(make_token!());
                 }
-                self.state = TokenizerState::SingleQuote;
+                self.state = TokenizerState::PendingChar(b'\'');
                 skip_char = true;
             } else if c == b'[' {
                 if self.index != start {
