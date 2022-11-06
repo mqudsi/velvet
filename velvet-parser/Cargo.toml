@@ -1,0 +1,8 @@
+[package]
+name = "velvet-parser"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+ast = { package = "velvet-ast", path = "../velvet-ast" }
+staticsort = "0.4.2"
