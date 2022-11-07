@@ -4,6 +4,8 @@ use ast::*;
 use std::io::{BufRead, BufReader};
 
 mod tokenizer;
+#[cfg(test)]
+mod tests;
 
 pub fn parse<'a>(input: &'a [u8]) -> Result<Ast<'a>, ParserError> {
     let line = 0;

@@ -7,7 +7,6 @@ use std::io::{BufRead, BufReader};
 
 pub struct Token<'a> {
     pub ttype: TokenType,
-    pub tag: TokenTag,
     pub text: Cow<'a, [u8]>,
     pub line: u32,
     pub col: u32,
@@ -17,7 +16,6 @@ impl core::fmt::Debug for Token<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Token")
             .field("ttype", &self.ttype)
-            .field("tag", &self.tag)
             .field("text", &String::from_utf8_lossy(&self.text))
             .field("position", &format!("{}:{}", self.line, self.col))
             .finish()
@@ -34,8 +32,8 @@ pub enum TokenTag {
 
 pub struct Tokenizer<'a> {
     input: &'a [u8],
-    state: TokenizerState,
-    continuation: bool,
+    /// A stack of states
+    state: Vec<TokenizerState>,
     index: usize,
     line: u32,
     col: u32,
@@ -45,21 +43,35 @@ pub struct Tokenizer<'a> {
     subshell_count: u32,
     /// Tracks the number of opened braces `(` (only in contexts where they are for expansion)
     braces_count: u32,
+    return_token: Option<TokenType>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub enum TokenType {
     Text,
-    Variable,
-    Index,
-    Subshell,
-    /// Represents either a literal `\n` or a semicolon `;`
+    DoubleQuote,
+    SingleQuote,
+    Dollar,
+    IndexStart,
+    SubshellStart,
+    OpeningBrace,
+    IndexEnd,
+    SubshellEnd,
+    ClosingBrace,
+    Semicolon,
+    /// Coalesced `\n` or `\r\n`. Never a `\r` by itself.
     EndOfLine,
+    /// The literal `|` but not in the case of `||` (see [`TokenType::Or`]).
     Pipe,
     Redirection,
-    /// Significant whitespace, e.g. one or more leading spaces at the start of a command
+    /// Coalesced whitespace. Currently just spaces.
     Whitespace,
     Comment,
+    Backgrounding,
+    /// Either a literal `&&` or a literal `and`.
+    LogicalAnd,
+    /// Either a literal `||` or a literal `or`. See also [`TokenType::Pipe`].
+    LogicalOr,
 }
 
 #[derive(Debug)]
@@ -71,11 +83,8 @@ pub enum TokenizerError {
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum TokenizerState {
     None,
-    PendingChar(u8),
+    Quote(u8),
     VariableName,
-    Bracket,
-    Subshell,
-    Braces,
 }
 
 trait BufReaderExt {
@@ -119,47 +128,41 @@ impl<R: Read> BufReaderExt for BufReader<R> {
     }
 }
 
-impl TokenizerState {
-    #[inline]
-    fn terminates_on(&self, c: u8) -> bool {
-        match (c, self) {
-            // Handles ending single-quoted/double-quoted contexts
-            (c, TokenizerState::PendingChar(c2)) => c == *c2,
-            (b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'_', TokenizerState::VariableName) => false,
-            (_, TokenizerState::VariableName) => true,
-            (b' ' | b'\n' | b';', TokenizerState::None) => true,
-            _ => false,
-        }
-    }
-
-    /// This is called after [`TokenizerState::terminates_on()`] and thus elides states that would
-    /// have matched there.
-    #[inline]
-    fn ignores(&self, c: u8) -> bool {
-        match (c, self) {
-            (b'"', TokenizerState::None) => false,
-            (b'\'', TokenizerState::None) => false,
-            (b'$', TokenizerState::PendingChar(b'"')) => false,
-            (b'(', TokenizerState::None) => false,
-            (b'[', TokenizerState::None) => false,
-            (b'{', TokenizerState::None) => false,
-            _ => true,
-        }
-    }
-}
-
 impl<'a> Tokenizer<'a> {
     pub fn new(source: &'a [u8]) -> Tokenizer<'a> {
         Tokenizer {
             input: source,
-            state: TokenizerState::None,
-            continuation: false,
+            state: Vec::new(),
             index: 0,
             line: 1,
             col: 1,
             bracket_count: 0,
             subshell_count: 0,
             braces_count: 0,
+            return_token: None,
+        }
+    }
+
+    fn tokenizer(input: &[u8]) -> impl Iterator<Item = Result<Token, TokenizerError>> {
+        let tokenizer = Tokenizer::new(input);
+        tokenizer.into_iter()
+    }
+
+    /// Peeks the current state from the top of [`TokenizerState::state`] or returns
+    /// [`TokenizerState::None`].
+    fn state(&self) -> TokenizerState {
+        match self.state.last() {
+            Some(s) => *s,
+            None => TokenizerState::None,
+        }
+    }
+
+    #[inline]
+    fn peek(&self) -> Option<u8> {
+        if self.index + 1 >= self.input.len() {
+            None
+        } else {
+            Some(self.input[self.index + 1])
         }
     }
 
@@ -169,42 +172,22 @@ impl<'a> Tokenizer<'a> {
         let mut is_escape = false;
 
         macro_rules! make_token {
-            () => {
-                make_token!(next_state: self.state, continues: self.continuation)
-            };
-            (next_state: $next_state:expr) => {
-                make_token!(next_state: $next_state, continues: self.continuation)
-            };
-            (next_state: $next_state:expr, continues: $continues:expr) => {{
+            ($ttype:expr) => {{
+                eprintln!("Returning token from state {:?}", self.state());
                 let token = Token {
-                    ttype: if is_escape {
-                        TokenType::Text
-                    } else if self.state == TokenizerState::Subshell {
-                        TokenType::Subshell
-                    } else if self.state == TokenizerState::Bracket {
-                        TokenType::Index
-                    } else if self.state == TokenizerState::VariableName {
-                        TokenType::Variable
-                    } else {
-                        TokenType::Text
-                    },
-                    tag: if self.continuation {
-                        TokenTag::Continuation
-                    } else {
-                        TokenTag::None
-                    },
+                    ttype: $ttype,
                     text: Cow::Borrowed(&self.input[start..self.index]),
                     line: loc.0,
                     col: loc.1,
                 };
-                self.state = $next_state;
-                self.continuation = $continues;
+                eprintln!("Returning token of type {:?}", token.ttype);
+                start = self.index;
                 token
             }};
         }
 
         if self.index < self.input.len() {
-            eprintln!("Starting/resuming in state {:?} on c == '{}' ({}:{})", self.state, self.input[self.index] as char, loc.0, loc.1);
+            eprintln!("Starting/resuming in state {:?} on c == '{}' ({}:{})", self.state(), self.input[self.index] as char, loc.0, loc.1);
         }
         let mut skip_char = false;
         loop {
@@ -212,131 +195,223 @@ impl<'a> Tokenizer<'a> {
                 if start == self.index {
                     return Err(TokenizerError::EndOfStream);
                 } else {
-                    return Ok(make_token!());
+                    return Ok(make_token!(TokenType::Text));
                 }
+            }
+
+            /// read_next!() is a macro that hides the fact that we skip over non-significant
+            /// whitespace and return a partially completed token before resuming parsing.
+            macro_rules! read {
+                ($pat:pat) => {
+                    if (self.index + 1) >= self.input.len() {
+                        Err(None)
+                    } else if matches!(self.input[(self.index + 1)], $pat) {
+                        self.index += 1;
+                        self.col += 1;
+                        let c = self.input[self.index];
+                        // We expect the first predicate below to be a compile-time constant
+                        if matches!(b'\n', $pat) && c == b'\n' {
+                            self.line += 1;
+                            self.col = 1;
+                        }
+                        Ok(c)
+                    } else {
+                        Err(Some(self.input[self.index + 1]))
+                    }
+                };
+                (not: $pat:pat) => {
+                    if (self.index + 1) >= self.input.len() {
+                        Err(None)
+                    } else if !matches!(self.input[(self.index + 1)], $pat) {
+                        self.index += 1;
+                        self.col += 1;
+                        let c = self.input[self.index];
+                        // We expect the first predicate below to be a compile-time constant
+                        if !matches!(b'\n', $pat) && c == b'\n' {
+                            self.line += 1;
+                            self.col = 1;
+                        }
+                        Ok(c)
+                    } else {
+                        Err(Some(self.input[self.index + 1]))
+                    }
+                };
             }
 
             let c = self.input[self.index];
+            eprintln!("c: {}, state: {:?}", c as char, self.state());
+            match (c, self.state()) {
+                (b'\\', _) => {
+                    todo!("handle escapes!");
+                }
+                (c, TokenizerState::Quote(q)) if c == q => {
+                    if self.index != start {
+                        return Ok(make_token!(TokenType::Text)); // previous or text
+                    }
+                    self.state.pop();
+                    self.index += 1;
+                    self.col += 1;
+                    let ttype = match c {
+                        b'"' => TokenType::DoubleQuote,
+                        b'\'' => TokenType::SingleQuote,
+                        _ => unreachable!(),
+                    };
+                    return Ok(make_token!(ttype));
+                },
+                (_, TokenizerState::Quote(b'\'')) => {
+                    // Just keep going
+                },
+                (b'$', _) => {
+                    if self.index != start {
+                        return Ok(make_token!(TokenType::Text));
+                    }
+                    self.state.push(TokenizerState::VariableName);
+                    self.index += 1;
+                    self.col += 1;
+                    return Ok(make_token!(TokenType::Dollar));
+                }
+                (_, TokenizerState::Quote(b'"')) => {
+                    // Just keep going
+                },
+                (b'(' | b'{' | b'[', _) => {
+                    if self.index != start {
+                        return Ok(make_token!(TokenType::Text)); // previous or text
+                    }
+                    self.index += 1;
+                    self.col += 1;
+                    let ttype = match c {
+                        b'(' => TokenType::SubshellStart,
+                        b'{' => TokenType::OpeningBrace,
+                        b'[' => TokenType::IndexStart,
+                        _ => unreachable!(),
+                    };
+                    return Ok(make_token!(ttype));
+                },
+                (b')' | b'}' | b']', _) => {
+                    if self.index != start {
+                        return Ok(make_token!(TokenType::Text)); // previous or text
+                    }
+                    self.index += 1;
+                    self.col += 1;
+                    let ttype = match c {
+                        b')' => TokenType::SubshellEnd,
+                        b'}' => TokenType::ClosingBrace,
+                        b']' => TokenType::IndexEnd,
+                        _ => unreachable!(),
+                    };
+                    return Ok(make_token!(ttype));
+                },
+                (b' ', _) => {
+                    if self.index != start {
+                        return Ok(make_token!(TokenType::Text)); // previous or start
+                    }
+                    self.state.pop();
+                    while read!(b' ').is_ok() {
+                    }
+                    self.index += 1;
+                    self.col += 1;
+                    return Ok(make_token!(TokenType::Whitespace));
+                }
+                (b'\r', _) => {
+                    if self.peek() == Some(b'\n') {
+                        if self.index != start {
+                            return Ok(make_token!(TokenType::Text));
+                        }
 
-            if is_escape {
-                todo!("Handle remainder of escape as buffered string!");
+                        // We can merge the \r into the \n and treat as TT::EndOfLine
+                        while read!(b'\r' | b'\n').is_ok() {
+                        }
+                        self.index += 1;
+                        self.col += 1;
+                        return Ok(make_token!(TokenType::EndOfLine));
+                    }
+                    // Otherwise append the \r to whatever text comes next
+                }
+                (b'\n', _) => {
+                    if self.index != start {
+                        return Ok(make_token!(TokenType::Text)); // previous or start
+                    }
+                    self.line += 1;
+                    self.col = 1;
+                    self.state.pop();
+                    while read!(b'\n' | b'\n').is_ok() {
+                    }
+                    self.index += 1;
+                    return Ok(make_token!(TokenType::EndOfLine));
+                }
+                (b';', _) => {
+                    if self.index != start {
+                        return Ok(make_token!(TokenType::Text)); // previous or start
+                    }
+                    self.state.pop();
+                    self.index += 1;
+                    self.col += 1;
+                    return Ok(make_token!(TokenType::Semicolon));
+                }
+                (b'"' | b'"', _) => {
+                    if self.index != start {
+                        return Ok(make_token!(TokenType::Text)); // previous or text
+                    }
+                    self.state.push(TokenizerState::Quote(c));
+                    self.index += 1;
+                    self.col += 1;
+                    let ttype = match c {
+                        b'"' => TokenType::DoubleQuote,
+                        b'\'' => TokenType::SingleQuote,
+                        _ => unreachable!(),
+                    };
+                    return Ok(make_token!(ttype));
+                },
+                (b'&', _) => {
+                    if self.peek() == Some(b'&') {
+                        if self.index != start {
+                            return Ok(make_token!(TokenType::Text)); // previous or start
+                        }
+                        _ = read!(b'&');
+                        self.index += 1;
+                        self.col += 1;
+                        return Ok(make_token!(TokenType::LogicalAnd));
+                    }
+                    if matches!(self.peek(), Some(b' ' | b'\n' | b'|' | b';') | None) {
+                        if self.index != start {
+                            return Ok(make_token!(TokenType::Text)); // previous or text
+                        }
+                        _ = read!(_);
+                        return Ok(make_token!(TokenType::Backgrounding));
+                    }
+                    // It is to be considered regular text and returned appended to what
+                    // came before and/or comes after.
+                },
+                _ => {
+                }
             }
 
-            if self.state.terminates_on(c) {
-                let next_state = if self.state != TokenizerState::VariableName { self.state } else { TokenizerState::None };
-                if self.index != start {
-                    // End tokenization here, restarting at this same symbol next time
-                    return Ok(make_token!(next_state: next_state));
-                }
-                self.state = TokenizerState::None;
-                self.continuation = !matches!(c, b' ' | b';' | b'\n');
-                skip_char = true;
-            } else if self.terminate_after(c) {
-                self.index += 1;
-                self.col += 1;
-                return Ok(make_token!(next_state: TokenizerState::None, continues: true));
-            } else if self.state.ignores(c) {
-                if self.state == TokenizerState::Bracket && c == b'[' {
-                    self.bracket_count += 1;
-                } else if self.state == TokenizerState::Subshell && c == b'(' {
-                    self.subshell_count += 1;
-                } else if self.state == TokenizerState::Braces && c == b'{' {
-                    self.braces_count += 1;
-                }
-            } else if c == b'\\' {
-                is_escape = true;
-                if self.index != start {
-                    return Ok(make_token!());
-                }
-            } else if c == b'"' {
-                if self.index != start {
-                    return Ok(make_token!());
-                }
-                self.state = TokenizerState::PendingChar(b'"');
-                skip_char = true;
-            } else if c == b'\'' {
-                if self.index != start {
-                    return Ok(make_token!());
-                }
-                self.state = TokenizerState::PendingChar(b'\'');
-                skip_char = true;
-            } else if c == b'[' {
-                if self.index != start {
-                    return Ok(make_token!());
-                }
-                eprintln!("brackets mode");
-                self.state = TokenizerState::Bracket;
-                self.bracket_count += 1;
-            } else if c == b'(' {
-                if self.index != start {
-                    return Ok(make_token!());
-                }
-                self.state = TokenizerState::Subshell;
-                self.subshell_count += 1;
-            } else if c == b'{' {
-                if self.index != start {
-                    return Ok(make_token!());
-                }
-                self.state = TokenizerState::Braces;
-                self.braces_count += 1;
-            } else if c == b'$' {
-                if self.index != start {
-                    return Ok(make_token!());
-                }
-                self.state = TokenizerState::VariableName;
-            }
+            assert_ne!(c, b'\n');
 
             self.index += 1;
             self.col += 1;
-            if c == b'\n' {
-                if !skip_char {
-                    eprintln!("Not skipping new line in state {:?}", self.state);
-                }
-                self.line += 1;
-                self.col = 1;
-            }
-            if skip_char {
-                start = self.index;
-                loc = (self.line, self.col);
-            }
-            skip_char = false;
+
 
             // TODO: Handle UTF-8 fragments as incomplete tokens
         }
     }
-
-    #[inline]
-    fn terminate_after(&mut self, c: u8) -> bool {
-        match (c, &self.state) {
-            (b']', &TokenizerState::Bracket) => {
-                self.bracket_count -= 1;
-                self.bracket_count == 0
-            },
-            (b')', &TokenizerState::Subshell) => {
-                self.subshell_count -= 1;
-                self.subshell_count == 0
-            }
-            (b'}', &TokenizerState::Braces) => {
-                self.braces_count -= 1;
-                self.braces_count == 0
-            }
-            _ => false,
-        }
-    }
 }
 
-#[test]
-fn basic_syntax_test() {
-    let input = r#"
-set x "foo"[1]
-echo "hello world"$goodbye[2]" friend"
-echo "hi "(echo from a (echo nested)[1] subshell)
-"#;
-    let tokenizer = Tokenizer::new(input.as_bytes());
-    let tokens: Vec<_> = tokenizer.collect();
-
-    panic!("{:#?}", tokens);
-}
+// #[test]
+// fn basic_syntax_test() {
+//     let input = format!(r#"
+// set x "foo"[1]
+// echo "hello world"$goodbye[2]" friend"
+// echo "hi "(echo from a (echo nested)[1] subshell)
+// echo this&is a string{nl}
+// echo th{nl}is is all text
+// echo this is backgrounded&
+// "#, nl = '\r');
+//     let tokenizer = Tokenizer::new(input.as_bytes());
+//     let tokens: Vec<_> = tokenizer.collect();
+//
+//     panic!("{:#?}", tokens);
+// }
 
 impl<'a> Iterator for Tokenizer<'a> {
     type Item = Result<Token<'a>, TokenizerError>;
