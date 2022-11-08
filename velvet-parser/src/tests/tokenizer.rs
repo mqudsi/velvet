@@ -66,11 +66,12 @@ fn unbalanced_closing_symbol<const C: u8>() {
             Ok(_) => continue,
             // Matching against a const parameter directly as a structural member is not yet
             // supported. See https://rust-lang.github.io/rfcs/1445-restrict-constants-in-patterns.html
-            Err(TokenizerError::UnexpectedSymbol {
-                symbol: c,
+            Err(TokenizerError {
+                kind: ErrorKind::UnexpectedSymbol { symbol },
                 line: 1,
                 col: 6,
-            }) if c == C => return,
+                ..
+            }) if symbol == C => return,
             Err(e) => panic!("Unexpected tokenizer error {e:?}"),
         }
     }

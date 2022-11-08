@@ -71,10 +71,19 @@ pub enum TokenType {
 }
 
 #[derive(Debug)]
-pub enum TokenizerError {
-    Io(std::io::Error),
+pub struct TokenizerError {
+    pub kind: ErrorKind,
+    pub line: u32,
+    pub col: u32,
+    pub len: u8,
+}
+
+#[derive(Debug)]
+pub enum ErrorKind {
     EndOfStream,
-    UnexpectedSymbol { symbol: u8, line: u32, col: u32 },
+    UnterminatedEscape,
+    UnexpectedSymbol { symbol: u8 },
+    InvalidEscape,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -245,6 +254,23 @@ impl<'a> Tokenizer<'a> {
             }};
         }
 
+        macro_rules! tok_error {
+            ($kind:expr) => {{
+                tok_error!($kind, len: 1)
+            }};
+            ($kind:expr, len: $len:literal) => {{
+                tok_error!($kind, len: $len, offset: 0)
+            }};
+            ($kind:expr, len: $len:literal, offset: $offset:literal) => {{
+                TokenizerError {
+                    kind: $kind,
+                    line: self.line,
+                    col: (self.col as i32 + $offset) as u32,
+                    len: $len,
+                }
+            }};
+        }
+
         if self.index < self.input.len() {
             eprintln!(
                 "Starting/resuming in state {:?} on c == '{}' ({}:{})",
@@ -258,7 +284,7 @@ impl<'a> Tokenizer<'a> {
         loop {
             if self.index == self.input.len() {
                 if start == self.index {
-                    return Err(TokenizerError::EndOfStream);
+                    return Err(tok_error!(ErrorKind::EndOfStream, len: 0));
                 } else {
                     return Ok(make_token!());
                 }
@@ -306,8 +332,62 @@ impl<'a> Tokenizer<'a> {
             let c = self.input[self.index];
             eprintln!("c: {}, state: {:?}", c as char, self.state());
             match (c, self.state()) {
+                // TODO: move escape handling to a function so we can keep it in cold storage
                 (b'\\', _) => {
-                    todo!("handle escapes!");
+                    if have_fragment!() {
+                        return Ok(make_token!());
+                    }
+                    if self.peek().is_none() {
+                        return Err(tok_error!(ErrorKind::UnterminatedEscape));
+                    }
+                    consume_char!();
+                    let text = match self.input[self.index] {
+                        b'a' => 0x07, // alert
+                        b'e' => 0x1b, // escape
+                        b'f' => 0x0c, // form feed
+                        b'n' => b'\n',
+                        b'r' => b'\r',
+                        b't' => b'\t',
+                        b'v' => 0x0b, // vertical tab
+                        b'x' | b'X' => {
+                            // Read a one or two-digit hex sequence
+                            consume_char!();
+                            let hex1 = match read!(b'0'..=b'9' | b'a'..=b'f' | b'A'..=b'F') {
+                                Err(None) => return Err(tok_error!(ErrorKind::UnterminatedEscape)),
+                                Ok(hex) => hex,
+                                Err(_) => return Err(tok_error!(ErrorKind::InvalidEscape, len: 2, offset: -2)),
+                            };
+                            let hex2 = match read!(b'0'..=b'9' | b'a'..=b'f' | b'A'..=b'F') {
+                                Err(None) => None,
+                                Ok(hex) => Some(hex),
+                                Err(_) => return Err(tok_error!(ErrorKind::InvalidEscape, len: 3, offset: -3)),
+                            };
+
+                            return Ok(Token {
+                                ttype: TokenType::Text,
+                                text: match (hex1, hex2) {
+                                    (hex1, Some(hex2)) => {
+                                        let src = &self.input[self.index-2..][..2];
+                                        let src = std::str::from_utf8(src).unwrap();
+                                        let value = u8::from_str_radix(src, 16)
+                                            .expect("We've already verified it's a valid hex value");
+                                        Cow::Owned(vec![value])
+                                    }
+                                    (hex1, None) => {
+                                        let src = &self.input[self.index-1..][..1];
+                                        let src = std::str::from_utf8(src).unwrap();
+                                        let value = u8::from_str_radix(src, 16)
+                                            .expect("We've already verified it's a valid hex value");
+                                        Cow::Owned(vec![value])
+                                    }
+                                },
+                                line: self.line,
+                                col: self.col,
+                            });
+                        },
+                        // Otherwise return the next character itself
+                        c => c,
+                    };
                 }
                 (b'"', TokenizerState::DoubleQuote) => {
                     if have_fragment!() {
@@ -402,11 +482,9 @@ impl<'a> Tokenizer<'a> {
                     if have_fragment!() {
                         return Ok(make_token!());
                     }
-                    let error = TokenizerError::UnexpectedSymbol {
+                    let error = tok_error!(ErrorKind::UnexpectedSymbol {
                         symbol: c,
-                        line: self.line,
-                        col: self.col,
-                    };
+                    });
                     consume_char!();
                     return Err(error);
                 }
@@ -507,49 +585,32 @@ impl<'a> Tokenizer<'a> {
     }
 }
 
-// #[test]
-// fn basic_syntax_test() {
-//     let input = format!(r#"
-// set x "foo"[1]
-// echo "hello world"$goodbye[2]" friend"
-// echo "hi "(echo from a (echo nested)[1] subshell)
-// echo this&is a string{nl}
-// echo th{nl}is is all text
-// echo this is backgrounded&
-// "#, nl = '\r');
-//     let tokenizer = Tokenizer::new(input.as_bytes());
-//     let tokens: Vec<_> = tokenizer.collect();
-//
-//     panic!("{:#?}", tokens);
-// }
-
 impl<'a> Iterator for Tokenizer<'a> {
     type Item = Result<Token<'a>, TokenizerError>;
 
     fn next(&mut self) -> Option<Self::Item> {
         match self.read_next() {
-            Err(TokenizerError::EndOfStream) => None,
+            Err(TokenizerError { kind: ErrorKind::EndOfStream, .. }) => None,
             x => Some(x),
+        }
+    }
+}
+
+impl std::fmt::Display for ErrorKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ErrorKind::UnexpectedSymbol { symbol } => write!(f, "Unexpected symbol '{}'", *symbol as char),
+            ErrorKind::UnterminatedEscape => write!(f, "Unterminated escape"),
+            ErrorKind::EndOfStream => write!(f, "End-of-stream"),
+            ErrorKind::InvalidEscape => write!(f, "Invalid escape"),
         }
     }
 }
 
 impl std::fmt::Display for TokenizerError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            TokenizerError::Io(e) => e.fmt(f),
-            TokenizerError::EndOfStream => write!(f, "End-of-stream"),
-            TokenizerError::UnexpectedSymbol { symbol, line, col } => {
-                write!(f, "Unexpected symbol '{symbol}' at {line}:{col}")
-            }
-        }
+        write!(f, "{} at {}:{}", self.kind, self.line, self.col)
     }
 }
 
 impl std::error::Error for TokenizerError {}
-
-impl From<std::io::Error> for TokenizerError {
-    fn from(value: std::io::Error) -> Self {
-        TokenizerError::Io(value)
-    }
-}
