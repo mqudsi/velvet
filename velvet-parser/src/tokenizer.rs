@@ -81,9 +81,19 @@ pub struct TokenizerError {
 #[derive(Debug)]
 pub enum ErrorKind {
     EndOfStream,
+    UnexpectedSymbol {
+        symbol: u8,
+    },
+    /// A dangling `\\` without any following characters. Can be considered a for of
+    /// [`ErrorKind::EndOfStream`] and isn't necessarily an error if the input isn't complete.
     UnterminatedEscape,
-    UnexpectedSymbol { symbol: u8 },
+    /// A hex-based escape but followed by a non-hex character.
     InvalidEscape,
+    /// A properly-formed `\u` or `\U` escape was provided but evaluated to an illegal value for a
+    /// Unicode Scalar Value (i.e. was a high- or low-surrogate codepoint).
+    InvalidCodepoint,
+    /// An octal escape was used to form an extended ASCII value, which is not supported.
+    InvalidAscii,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -258,15 +268,15 @@ impl<'a> Tokenizer<'a> {
             ($kind:expr) => {{
                 tok_error!($kind, len: 1)
             }};
-            ($kind:expr, len: $len:literal) => {{
+            ($kind:expr, len: $len:expr) => {{
                 tok_error!($kind, len: $len, offset: 0)
             }};
-            ($kind:expr, len: $len:literal, offset: $offset:literal) => {{
+            ($kind:expr, len: $len:expr, offset: $offset:expr) => {{
                 TokenizerError {
                     kind: $kind,
                     line: self.line,
-                    col: (self.col as i32 + $offset) as u32,
-                    len: $len,
+                    col: (TryInto::<i32>::try_into(self.col).unwrap() + TryInto::<i32>::try_into($offset).unwrap()).try_into().unwrap(),
+                    len: $len.try_into().unwrap(),
                 }
             }};
         }
@@ -292,6 +302,9 @@ impl<'a> Tokenizer<'a> {
 
             /// A pull-based read that consumes the current character only if it is a match.
             macro_rules! read {
+                (hex) => {
+                    read!(b'0'..=b'9' | b'a'..=b'f' | b'A'..=b'F')
+                };
                 ($pat:pat) => {
                     match self.read() {
                         None => Err(None),
@@ -341,53 +354,222 @@ impl<'a> Tokenizer<'a> {
                         return Err(tok_error!(ErrorKind::UnterminatedEscape));
                     }
                     consume_char!();
-                    let text = match self.input[self.index] {
+                    // Safe to unwrap because we've already used `peek()` above successfully.
+                    let byte = match read!(_).unwrap() {
                         b'a' => 0x07, // alert
                         b'e' => 0x1b, // escape
                         b'f' => 0x0c, // form feed
+                        b'v' => 0x0b, // vertical tab
                         b'n' => b'\n',
                         b'r' => b'\r',
                         b't' => b'\t',
-                        b'v' => 0x0b, // vertical tab
                         b'x' | b'X' => {
                             // Read a one or two-digit hex sequence
-                            consume_char!();
-                            let hex1 = match read!(b'0'..=b'9' | b'a'..=b'f' | b'A'..=b'F') {
-                                Err(None) => return Err(tok_error!(ErrorKind::UnterminatedEscape)),
+                            let hex1 = match read!(hex) {
                                 Ok(hex) => hex,
-                                Err(_) => return Err(tok_error!(ErrorKind::InvalidEscape, len: 2, offset: -2)),
+                                Err(None) => {
+                                    return Err(
+                                        tok_error!(ErrorKind::InvalidEscape, len: 2, offset: -2),
+                                    )
+                                }
+                                Err(_) => {
+                                    return Err(
+                                        tok_error!(ErrorKind::InvalidEscape, len: 3, offset: -2),
+                                    )
+                                }
                             };
-                            let hex2 = match read!(b'0'..=b'9' | b'a'..=b'f' | b'A'..=b'F') {
-                                Err(None) => None,
+                            let hex2 = match read!(hex) {
                                 Ok(hex) => Some(hex),
-                                Err(_) => return Err(tok_error!(ErrorKind::InvalidEscape, len: 3, offset: -3)),
+                                Err(None) => None,
+                                Err(_) => None,
                             };
 
                             return Ok(Token {
                                 ttype: TokenType::Text,
                                 text: match (hex1, hex2) {
                                     (hex1, Some(hex2)) => {
-                                        let src = &self.input[self.index-2..][..2];
+                                        let src = &self.input[self.index - 2..][..2];
                                         let src = std::str::from_utf8(src).unwrap();
-                                        let value = u8::from_str_radix(src, 16)
-                                            .expect("We've already verified it's a valid hex value");
+                                        let value = u8::from_str_radix(src, 16).expect(
+                                            "We've already verified it's a valid hex value",
+                                        );
                                         Cow::Owned(vec![value])
                                     }
                                     (hex1, None) => {
-                                        let src = &self.input[self.index-1..][..1];
+                                        let src = &self.input[self.index - 1..][..1];
                                         let src = std::str::from_utf8(src).unwrap();
-                                        let value = u8::from_str_radix(src, 16)
-                                            .expect("We've already verified it's a valid hex value");
+                                        let value = u8::from_str_radix(src, 16).expect(
+                                            "We've already verified it's a valid hex value",
+                                        );
                                         Cow::Owned(vec![value])
                                     }
                                 },
-                                line: self.line,
-                                col: self.col,
+                                line: loc.0,
+                                col: loc.1,
+                                // TODO: store the slice containing the undecoded representation
                             });
-                        },
-                        // Otherwise return the next character itself
-                        c => c,
+                        }
+                        b'u' => {
+                            // Read 1-4 hex digits into a 16-bit Unicode codepoint
+                            let mut hex_count = 0;
+                            let mut hex_chars = [0u8; 4];
+                            let hex_iter = std::iter::from_fn(|| read!(hex).ok()).take(4);
+                            for hex in hex_iter {
+                                hex_chars[hex_count] = hex;
+                                hex_count += 1;
+                            }
+
+                            // Confine results to what we actually were able to read
+                            let hex_chars = &hex_chars[0..hex_count];
+                            if hex_count == 0 {
+                                return Err(match self.read() {
+                                    None => {
+                                        tok_error!(ErrorKind::UnterminatedEscape, len: 2, offset: -2)
+                                    }
+                                    _ => tok_error!(ErrorKind::InvalidEscape, len: 3, offset: -2),
+                                });
+                            }
+                            // Convert from hex to a 16-bit value. Safe to unwrap because we've
+                            // already validated that it's all valid hex characters and that we're
+                            // only reading as many hex digits as would fit.
+                            let hex_chars = std::str::from_utf8(hex_chars).unwrap();
+                            let codepoint = u16::from_str_radix(hex_chars, 16).unwrap();
+                            // Validate codepoint is a valid Unicode Scalar Value (anything other
+                            // than a surrogate codepoint).
+                            let codepoint = match char::from_u32(codepoint as u32) {
+                                Some(c) => c,
+                                None => {
+                                    return Err(
+                                        tok_error!(ErrorKind::InvalidCodepoint, len: 2 + hex_count as i32, offset: -2 - hex_count as i32),
+                                    )
+                                }
+                            };
+
+                            return Ok(Token {
+                                ttype: TokenType::Text,
+                                text: Cow::Owned(String::from(codepoint).into_bytes()),
+                                line: loc.0,
+                                col: loc.1,
+                                // TODO: store the slice containing the undecoded representation
+                            });
+                        }
+                        b'U' => {
+                            // Read 1-8 hex digits into a 32-bit Unicode codepoint
+                            let mut hex_count = 0;
+                            let mut hex_chars = [0u8; 8];
+                            let hex_iter = std::iter::from_fn(|| read!(hex).ok()).take(8);
+                            for hex in hex_iter {
+                                hex_chars[hex_count] = hex;
+                                hex_count += 1;
+                            }
+
+                            // Confine results to what we actually were able to read
+                            let hex_chars = &hex_chars[0..hex_count];
+                            if hex_count == 0 {
+                                return Err(match self.read() {
+                                    None => {
+                                        tok_error!(ErrorKind::UnterminatedEscape, len: 2, offset: -2)
+                                    }
+                                    _ => tok_error!(ErrorKind::InvalidEscape, len: 3, offset: -2),
+                                });
+                            }
+                            // Convert from hex to a 32-bit value. Safe to unwrap because we've
+                            // already validated that it's all valid hex characters and that we're
+                            // only reading as many hex digits as would fit.
+                            let hex_chars = std::str::from_utf8(hex_chars).unwrap();
+                            let codepoint = u32::from_str_radix(hex_chars, 16).unwrap();
+                            // Validate codepoint is a valid Unicode Scalar Value (anything other
+                            // than a surrogate codepoint).
+                            let codepoint = char::from_u32(codepoint)
+                                .ok_or_else(|| tok_error!(ErrorKind::InvalidCodepoint, len: 2 + hex_count as i32, offset: -2 - hex_count as i32))?;
+
+                            return Ok(Token {
+                                ttype: TokenType::Text,
+                                text: Cow::Owned(String::from(codepoint).into_bytes()),
+                                line: loc.0,
+                                col: loc.1,
+                                // TODO: store the slice containing the undecoded representation
+                            });
+                        }
+                        b'c' => {
+                            // Generate the keycode for ctrl + whatever char comes next.
+                            // A control code is the last five bits of the ASCII code, for the 32
+                            // ASCII characters from @ to _ (mapping 0x40..=0x5F to 0x00..=0x1F)
+                            // and repeated again (for the lowercase values) for the next 31 codes
+                            // (from ` to ~ or 0x60 to 0x7E). The 32nd lowercase value is DEL (which
+                            // isn't printable) so it isn't used.
+                            let code = read!(b'@'..=b'~').map_err(|e| match e {
+                                None => {
+                                    tok_error!(ErrorKind::UnterminatedEscape, len: 2, offset: -2)
+                                }
+                                _ => tok_error!(ErrorKind::InvalidEscape, len: 3, offset: -2),
+                            })?;
+                            code & 0b00011111
+                        }
+                        o @ b'0'..=b'7' => {
+                            // Read up to 3 octal digits and return them as a single ASCII character
+                            let mut octal_count = 1;
+                            let mut octal_chars = [o, 0, 0];
+                            if let Ok(o) = read!(b'0'..=b'7') {
+                                octal_chars[octal_count] = o;
+                                octal_count = 2;
+                                if let Ok(o) = read!(b'0'..=b'7') {
+                                    octal_chars[octal_count] = o;
+                                    octal_count = 3;
+                                }
+                            }
+                            let octal_chars = &octal_chars[0..octal_count];
+                            // Safe to unwrap because we've already guaranteed they're ASCII values
+                            let octal_chars = std::str::from_utf8(octal_chars).unwrap();
+                            // Maximum base-10 value that can be expressed in 3 octal digits is 511,
+                            // but fish octal escapes are documented as returning an ASCII value.
+                            // The maximum value that can fit into a u8 is o377 (255) but fish
+                            // further caps the octal input to a max of o177 (128).
+
+                            // Safe to unwrap since a 3-digit octal number has a max of 0x1FF
+                            let value = u16::from_str_radix(octal_chars, 8).unwrap();
+                            if value > 0o177 {
+                                return Err(
+                                    tok_error!(ErrorKind::InvalidAscii, len: 1 + octal_count as i32, offset: -1 - octal_count as i32),
+                                );
+                            }
+                            value as u8
+                        }
+                        b'\n' => {
+                            // A literal new line after an escape is a continuation and should be
+                            // interpreted as ignoring the new line altogether (though incrementing
+                            // our inner line count).
+                            start = self.index;
+                            loc = (self.line, self.col);
+                            continue;
+                        }
+                        b'\r' => {
+                            // Treat like an escape of a literal \n if followed by one
+                            if read!(b'\n').is_ok() {
+                                start = self.index;
+                                loc = (self.line, self.col);
+                            } else {
+                                // Otherwise continuing below will just map an escaped \r to itself,
+                                // which is fine.
+                            }
+                            continue;
+                        }
+                        c => {
+                            // The escape evaluates to the next character itself.
+                            // Instead of returning a single character as a text token, just consume
+                            // the character and progress the loop. The character will be the start
+                            // of a new text token.
+                            continue;
+                        }
                     };
+
+                    return Ok(Token {
+                        ttype: TokenType::Text,
+                        text: Cow::Owned(vec![byte]),
+                        line: loc.0,
+                        col: loc.1,
+                        // TODO: return the input slice mapping to this text
+                    });
                 }
                 (b'"', TokenizerState::DoubleQuote) => {
                     if have_fragment!() {
@@ -482,9 +664,7 @@ impl<'a> Tokenizer<'a> {
                     if have_fragment!() {
                         return Ok(make_token!());
                     }
-                    let error = tok_error!(ErrorKind::UnexpectedSymbol {
-                        symbol: c,
-                    });
+                    let error = tok_error!(ErrorKind::UnexpectedSymbol { symbol: c });
                     consume_char!();
                     return Err(error);
                 }
@@ -590,7 +770,10 @@ impl<'a> Iterator for Tokenizer<'a> {
 
     fn next(&mut self) -> Option<Self::Item> {
         match self.read_next() {
-            Err(TokenizerError { kind: ErrorKind::EndOfStream, .. }) => None,
+            Err(TokenizerError {
+                kind: ErrorKind::EndOfStream,
+                ..
+            }) => None,
             x => Some(x),
         }
     }
@@ -599,10 +782,18 @@ impl<'a> Iterator for Tokenizer<'a> {
 impl std::fmt::Display for ErrorKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            ErrorKind::UnexpectedSymbol { symbol } => write!(f, "Unexpected symbol '{}'", *symbol as char),
+            ErrorKind::UnexpectedSymbol { symbol } => {
+                write!(f, "Unexpected symbol '{}'", *symbol as char)
+            }
             ErrorKind::UnterminatedEscape => write!(f, "Unterminated escape"),
             ErrorKind::EndOfStream => write!(f, "End-of-stream"),
             ErrorKind::InvalidEscape => write!(f, "Invalid escape"),
+            ErrorKind::InvalidCodepoint => {
+                write!(f, "Unicode escape evaluated to an invalid codepoint")
+            }
+            ErrorKind::InvalidAscii => {
+                write!(f, "Octal escape evaluated to an invalid ASCII character")
+            }
         }
     }
 }
