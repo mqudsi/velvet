@@ -162,6 +162,7 @@ fn variable_index() {
 }
 
 #[test]
+/// Ensure variable names are found in a quoted context.
 fn quoted_variable_name() {
     let input = br#"echo "hello $world""#;
     let mut tokens = tokenize(input).map(Result::unwrap);
@@ -175,6 +176,7 @@ fn quoted_variable_name() {
 }
 
 #[test]
+/// Ensure variable names and indexes in a quoted context are found.
 fn quoted_variable_index() {
     let input = br#"echo "hello $world[1]""#;
     let mut tokens = tokenize(input).map(Result::unwrap);
@@ -193,6 +195,44 @@ fn quoted_variable_index() {
     let tok = tokens.next().unwrap();
     assert_eq!(tok.ttype, TokenType::IndexEnd);
     assert_eq!(&*tok.text, b"]");
+}
+
+#[test]
+/// Assert that no empty variable name is returned when it's not present.
+fn no_variable_name() {
+    assert!(
+        tokenize(b"echo $ not_a_var_name")
+            .map(Result::unwrap)
+            .find(|t| t.ttype == TokenType::VariableName)
+            .is_none(),
+        "Detected a variable name after a space"
+    );
+
+    assert!(
+        tokenize(b"echo $(subshell is not a var)")
+            .map(Result::unwrap)
+            .find(|t| t.ttype == TokenType::VariableName)
+            .is_none(),
+        "Detected a variable name after a quoted subshell"
+    );
+}
+
+#[test]
+/// Ensure a `$(subshell)` is detected outside of a quoted context, too.
+fn dollar_subshell() {
+    let mut tokens = tokenize(b"echo $(echo hi)").map(Result::unwrap);
+
+    let tok = tokens
+        .find(|t| t.ttype == TokenType::Dollar)
+        .expect("Couldn't find the start of the $ expression");
+
+    let tok = tokens.next().unwrap();
+    assert_eq!(tok.ttype, TokenType::SubshellStart);
+    assert_eq!(&*tok.text, b"(");
+
+    let tok = tokens.last().unwrap();
+    assert_eq!(tok.ttype, TokenType::SubshellEnd);
+    assert_eq!(&*tok.text, b")");
 }
 
 #[test]

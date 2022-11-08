@@ -296,7 +296,6 @@ impl<'a> Tokenizer<'a> {
                         // can detect and handle the index as non-text. We don't need it to handle
                         // something like `echo "$(foo)[1]" because a simple peek will suffice.
                         if self.state() == TokenizerState::VariableName {
-                            eprintln!("Reverting from VariableName state without returning a token.");
                             self.state.pop();
                         }
                         false
@@ -438,12 +437,9 @@ impl<'a> Tokenizer<'a> {
                 }
                 (b'\n', _) => {
                     if have_fragment!() {
-                        eprintln!("Returning before \\n pos: ({}, {})", self.line, self.col);
                         return Ok(make_token!());
                     }
-                    eprintln!("Before \\n pos: ({}, {})", self.line, self.col);
                     while read!(b'\r' | b'\n').is_ok() {}
-                    eprintln!("After \\n pos: ({}, {})", self.line, self.col);
                     return Ok(make_token!(TokenType::EndOfLine));
                 }
                 (b';', _) => {
