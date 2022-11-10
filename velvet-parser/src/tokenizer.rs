@@ -170,13 +170,11 @@ impl<'a> Tokenizer<'a> {
         }
     }
 
+    #[inline]
     /// Peeks the current state from the top of [`TokenizerState::state`] or returns
     /// [`TokenizerState::None`].
     fn state(&self) -> TokenizerState {
-        match self.state.last() {
-            Some(s) => *s,
-            None => TokenizerState::None,
-        }
+        self.state.last().cloned().unwrap_or(TokenizerState::None)
     }
 
     #[inline]
