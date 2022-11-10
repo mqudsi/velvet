@@ -206,6 +206,25 @@ impl<'a> Tokenizer<'a> {
         }
     }
 
+    /// Returns an error pointing to the current line and column, with the column offset by the
+    /// provided `offset`.
+    fn error<T>(&self, kind: ErrorKind, len: usize, offset: i32) -> Result<T, TokenizerError> {
+        Err(TokenizerError {
+            kind,
+            line: self.line,
+            col: (TryInto::<i32>::try_into(self.col).unwrap() + TryInto::<i32>::try_into(offset).unwrap()).try_into().unwrap(),
+            len: len.try_into().unwrap(),
+        })
+    }
+
+    #[inline]
+    /// Bump the current read index and column. The line count isn't checked and should be handled
+    /// separately!
+    fn consume_char(&mut self) {
+        self.index += 1;
+        self.col += 1;
+    }
+
     fn read_next(&mut self) -> Result<Token<'a>, TokenizerError> {
         if let Some(token) = self.cached_token.take() {
             return Ok(token);
@@ -245,42 +264,6 @@ impl<'a> Tokenizer<'a> {
             }};
         }
 
-        /// A macro to modify `self.index` (and associated position values) so that the semantics of
-        /// the operation and the intention behind it are clear.
-        macro_rules! consume_char {
-            () => {{
-                self.index += 1;
-                self.col += 1;
-            }};
-            (check_line) => {{
-                match self.read() {
-                    Some(b'\n') => {
-                        self.index += 1;
-                        self.line += 1;
-                        self.col = 1;
-                    }
-                    _ => consume_char!(),
-                }
-            }};
-        }
-
-        macro_rules! tok_error {
-            ($kind:expr) => {{
-                tok_error!($kind, len: 1)
-            }};
-            ($kind:expr, len: $len:expr) => {{
-                tok_error!($kind, len: $len, offset: 0)
-            }};
-            ($kind:expr, len: $len:expr, offset: $offset:expr) => {{
-                TokenizerError {
-                    kind: $kind,
-                    line: self.line,
-                    col: (TryInto::<i32>::try_into(self.col).unwrap() + TryInto::<i32>::try_into($offset).unwrap()).try_into().unwrap(),
-                    len: $len.try_into().unwrap(),
-                }
-            }};
-        }
-
         if self.index < self.input.len() {
             eprintln!(
                 "Starting/resuming in state {:?} on c == '{}' ({}:{})",
@@ -294,7 +277,7 @@ impl<'a> Tokenizer<'a> {
         loop {
             if self.index == self.input.len() {
                 if start == self.index {
-                    return Err(tok_error!(ErrorKind::EndOfStream, len: 0));
+                    return self.error(ErrorKind::EndOfStream, 0, 0);
                 } else {
                     return Ok(make_token!());
                 }
@@ -309,7 +292,7 @@ impl<'a> Tokenizer<'a> {
                     match self.read() {
                         None => Err(None),
                         Some(c @ $pat) => {
-                            consume_char!();
+                            self.consume_char();
                             // We expect the first predicate below to be a compile-time constant
                             if matches!(b'\n', $pat) && c == b'\n' {
                                 self.line += 1;
@@ -351,9 +334,9 @@ impl<'a> Tokenizer<'a> {
                         return Ok(make_token!());
                     }
                     if self.peek().is_none() {
-                        return Err(tok_error!(ErrorKind::UnterminatedEscape));
+                        return self.error(ErrorKind::UnterminatedEscape, 1, 0);
                     }
-                    consume_char!();
+                    self.consume_char();
                     // Safe to unwrap because we've already used `peek()` above successfully.
                     let byte = match read!(_).unwrap() {
                         b'a' => 0x07, // alert
@@ -368,14 +351,10 @@ impl<'a> Tokenizer<'a> {
                             let hex1 = match read!(hex) {
                                 Ok(hex) => hex,
                                 Err(None) => {
-                                    return Err(
-                                        tok_error!(ErrorKind::InvalidEscape, len: 2, offset: -2),
-                                    )
+                                    return self.error(ErrorKind::InvalidEscape, 2, -2);
                                 }
                                 Err(_) => {
-                                    return Err(
-                                        tok_error!(ErrorKind::InvalidEscape, len: 3, offset: -2),
-                                    )
+                                    return self.error(ErrorKind::InvalidEscape, 3, -2);
                                 }
                             };
                             let hex2 = match read!(hex) {
@@ -422,12 +401,12 @@ impl<'a> Tokenizer<'a> {
                             // Confine results to what we actually were able to read
                             let hex_chars = &hex_chars[0..hex_count];
                             if hex_count == 0 {
-                                return Err(match self.read() {
+                                return match self.read() {
                                     None => {
-                                        tok_error!(ErrorKind::UnterminatedEscape, len: 2, offset: -2)
+                                        self.error(ErrorKind::UnterminatedEscape, 2, -2)
                                     }
-                                    _ => tok_error!(ErrorKind::InvalidEscape, len: 3, offset: -2),
-                                });
+                                    _ => self.error(ErrorKind::InvalidEscape, 3, -2)
+                                };
                             }
                             // Convert from hex to a 16-bit value. Safe to unwrap because we've
                             // already validated that it's all valid hex characters and that we're
@@ -439,9 +418,7 @@ impl<'a> Tokenizer<'a> {
                             let codepoint = match char::from_u32(codepoint as u32) {
                                 Some(c) => c,
                                 None => {
-                                    return Err(
-                                        tok_error!(ErrorKind::InvalidCodepoint, len: 2 + hex_count as i32, offset: -2 - hex_count as i32),
-                                    )
+                                    return self.error(ErrorKind::InvalidCodepoint, 2 + hex_count, -2 - hex_count as i32);
                                 }
                             };
 
@@ -466,12 +443,12 @@ impl<'a> Tokenizer<'a> {
                             // Confine results to what we actually were able to read
                             let hex_chars = &hex_chars[0..hex_count];
                             if hex_count == 0 {
-                                return Err(match self.read() {
+                                return match self.read() {
                                     None => {
-                                        tok_error!(ErrorKind::UnterminatedEscape, len: 2, offset: -2)
+                                        self.error(ErrorKind::UnterminatedEscape, 2, -2)
                                     }
-                                    _ => tok_error!(ErrorKind::InvalidEscape, len: 3, offset: -2),
-                                });
+                                    _ => self.error(ErrorKind::InvalidEscape, 3, -2),
+                                };
                             }
                             // Convert from hex to a 32-bit value. Safe to unwrap because we've
                             // already validated that it's all valid hex characters and that we're
@@ -480,8 +457,10 @@ impl<'a> Tokenizer<'a> {
                             let codepoint = u32::from_str_radix(hex_chars, 16).unwrap();
                             // Validate codepoint is a valid Unicode Scalar Value (anything other
                             // than a surrogate codepoint).
-                            let codepoint = char::from_u32(codepoint)
-                                .ok_or_else(|| tok_error!(ErrorKind::InvalidCodepoint, len: 2 + hex_count as i32, offset: -2 - hex_count as i32))?;
+                            let codepoint = match char::from_u32(codepoint) {
+                                Some(c) => c,
+                                None => self.error(ErrorKind::InvalidCodepoint, 2 + hex_count, -2 - hex_count as i32)?,
+                            };
 
                             return Ok(Token {
                                 ttype: TokenType::Text,
@@ -498,12 +477,13 @@ impl<'a> Tokenizer<'a> {
                             // and repeated again (for the lowercase values) for the next 31 codes
                             // (from ` to ~ or 0x60 to 0x7E). The 32nd lowercase value is DEL (which
                             // isn't printable) so it isn't used.
-                            let code = read!(b'@'..=b'~').map_err(|e| match e {
-                                None => {
-                                    tok_error!(ErrorKind::UnterminatedEscape, len: 2, offset: -2)
+                            let code = match read!(b'@'..=b'~') {
+                                Ok(c) => c,
+                                Err(None) => {
+                                    return self.error(ErrorKind::UnterminatedEscape, 2, -2)
                                 }
-                                _ => tok_error!(ErrorKind::InvalidEscape, len: 3, offset: -2),
-                            })?;
+                                _ => return self.error(ErrorKind::InvalidEscape, 3, -2),
+                            };
                             code & 0b00011111
                         }
                         o @ b'0'..=b'7' => {
@@ -529,9 +509,8 @@ impl<'a> Tokenizer<'a> {
                             // Safe to unwrap since a 3-digit octal number has a max of 0x1FF
                             let value = u16::from_str_radix(octal_chars, 8).unwrap();
                             if value > 0o177 {
-                                return Err(
-                                    tok_error!(ErrorKind::InvalidAscii, len: 1 + octal_count as i32, offset: -1 - octal_count as i32),
-                                );
+                                return
+                                    self.error(ErrorKind::InvalidAscii, 1 + octal_count, -1 - octal_count as i32);
                             }
                             value as u8
                         }
@@ -575,7 +554,7 @@ impl<'a> Tokenizer<'a> {
                     if have_fragment!() {
                         return Ok(make_token!());
                     }
-                    consume_char!();
+                    self.consume_char();
                     self.state.pop();
                     return Ok(make_token!(TokenType::DoubleQuote));
                 }
@@ -583,7 +562,7 @@ impl<'a> Tokenizer<'a> {
                     if have_fragment!() {
                         return Ok(make_token!());
                     }
-                    consume_char!();
+                    self.consume_char();
                     self.state.pop();
                     return Ok(make_token!(TokenType::SingleQuote));
                 }
@@ -594,7 +573,7 @@ impl<'a> Tokenizer<'a> {
                     if have_fragment!() {
                         return Ok(make_token!());
                     }
-                    consume_char!();
+                    self.consume_char();
                     let dollar = make_token!(TokenType::Dollar);
                     // Make sure we don't lose out on a subshell start in a quoted context
                     if read!(b'(').is_ok() {
@@ -619,14 +598,14 @@ impl<'a> Tokenizer<'a> {
                         return Ok(token);
                     }
                     self.state.push(TokenizerState::Index);
-                    consume_char!();
+                    self.consume_char();
                     return Ok(make_token!(TokenType::IndexStart));
                 }
                 (b'(' | b'{' | b'[', _) => {
                     if have_fragment!() {
                         return Ok(make_token!());
                     }
-                    consume_char!();
+                    self.consume_char();
                     let (ttype, state) = match c {
                         b'(' => (TokenType::SubshellStart, TokenizerState::Subshell),
                         b'{' => (TokenType::BraceStart, TokenizerState::Brace),
@@ -642,7 +621,7 @@ impl<'a> Tokenizer<'a> {
                     if have_fragment!() {
                         return Ok(make_token!());
                     }
-                    consume_char!();
+                    self.consume_char();
                     self.state.pop();
                     let ttype = match c {
                         b')' => TokenType::SubshellEnd,
@@ -664,15 +643,15 @@ impl<'a> Tokenizer<'a> {
                     if have_fragment!() {
                         return Ok(make_token!());
                     }
-                    let error = tok_error!(ErrorKind::UnexpectedSymbol { symbol: c });
-                    consume_char!();
-                    return Err(error);
+                    let error = self.error(ErrorKind::UnexpectedSymbol { symbol: c }, 1, 0);
+                    self.consume_char();
+                    return error;
                 }
                 (b',', TokenizerState::Brace) => {
                     if have_fragment!() {
                         return Ok(make_token!());
                     }
-                    consume_char!();
+                    self.consume_char();
                     return Ok(make_token!(TokenType::BraceSeparator));
                 }
                 (b' ', _) => {
@@ -704,7 +683,7 @@ impl<'a> Tokenizer<'a> {
                     if have_fragment!() {
                         return Ok(make_token!());
                     }
-                    consume_char!();
+                    self.consume_char();
                     return Ok(make_token!(TokenType::Semicolon));
                 }
                 (b'"', _) => {
@@ -712,7 +691,7 @@ impl<'a> Tokenizer<'a> {
                         return Ok(make_token!());
                     }
                     self.state.push(TokenizerState::DoubleQuote);
-                    consume_char!();
+                    self.consume_char();
                     return Ok(make_token!(TokenType::DoubleQuote));
                 }
                 (b'\'', _) => {
@@ -720,7 +699,7 @@ impl<'a> Tokenizer<'a> {
                         return Ok(make_token!());
                     }
                     self.state.push(TokenizerState::SingleQuote);
-                    consume_char!();
+                    self.consume_char();
                     return Ok(make_token!(TokenType::SingleQuote));
                 }
                 (b'&', _) => {
@@ -730,15 +709,15 @@ impl<'a> Tokenizer<'a> {
                         if have_fragment!() {
                             return Ok(make_token!());
                         }
-                        consume_char!();
-                        consume_char!();
+                        self.consume_char();
+                        self.consume_char();
                         return Ok(make_token!(TokenType::LogicalAnd));
                     }
                     if matches!(self.peek(), Some(b' ' | b'\r' | b'\n' | b'|' | b';') | None) {
                         if have_fragment!() {
                             return Ok(make_token!());
                         }
-                        consume_char!();
+                        self.consume_char();
                         return Ok(make_token!(TokenType::Backgrounding));
                     }
                     // Else it is to be considered regular text and returned appended to what came
@@ -749,7 +728,7 @@ impl<'a> Tokenizer<'a> {
                     if have_fragment!() {
                         return Ok(make_token!());
                     }
-                    consume_char!();
+                    self.consume_char();
                     if read!(b'|').is_ok() {
                         return Ok(make_token!(TokenType::LogicalOr));
                     }
@@ -758,7 +737,17 @@ impl<'a> Tokenizer<'a> {
                 _ => {}
             }
 
-            consume_char!(check_line);
+            match self.read() {
+                Some(b'\n') => {
+                    self.index += 1;
+                    self.line += 1;
+                    self.col = 1;
+                },
+                _ => {
+                    self.index += 1;
+                    self.col += 1;
+                },
+            }
 
             // TODO: Handle UTF-8 fragments as incomplete tokens
         }
