@@ -606,3 +606,169 @@ fn escape_octal_u8_range_exceeded() {
     assert_eq!(error.line, 1);
     assert_eq!(error.col, 1);
 }
+
+#[test]
+/// Verify basic 4-digit unicode escape support
+fn escape_unicode_four() {
+    let token = tokenize(br#"\u1234"#).next().unwrap().unwrap();
+    assert_eq!(token.ttype, TokenType::Text);
+    assert_eq!(&*token.text, "\u{1234}".as_bytes());
+    assert_eq!(token.line, 1);
+    assert_eq!(token.col, 1);
+}
+
+#[test]
+/// Verify 4-digit unicode with hex-like characters after
+fn escape_unicode_four_adjacent() {
+    let mut tokens = tokenize(br#"\u123456"#).map(Result::unwrap);
+
+    let token = tokens.next().unwrap();
+    assert_eq!(token.ttype, TokenType::Text);
+    assert_eq!(&*token.text, "\u{1234}".as_bytes());
+    assert_eq!(token.line, 1);
+    assert_eq!(token.col, 1);
+
+    let token = tokens.next().unwrap();
+    assert_eq!(token.ttype, TokenType::Text);
+    assert_eq!(&*token.text, b"56");
+    assert_eq!(token.line, 1);
+    assert_eq!(token.col, 7);
+}
+
+#[test]
+/// Verify 4-digit unicode with less than four hex-like characters
+fn escape_unicode_four_short() {
+    let mut tokens = tokenize(br#"\u123go"#).map(Result::unwrap);
+
+    let token = tokens.next().unwrap();
+    assert_eq!(token.ttype, TokenType::Text);
+    assert_eq!(&*token.text, "\u{123}".as_bytes());
+    assert_eq!(token.line, 1);
+    assert_eq!(token.col, 1);
+
+    let token = tokens.next().unwrap();
+    assert_eq!(token.ttype, TokenType::Text);
+    assert_eq!(&*token.text, b"go");
+    assert_eq!(token.line, 1);
+    assert_eq!(token.col, 6);
+}
+
+#[test]
+/// Verify 4-digit unicode with no valid hex characters
+fn escape_unicode_four_invalid_hex() {
+    let mut tokens = tokenize(br#"\ug123"#);
+
+    let error = tokens.next().unwrap()
+        .expect_err("An invalid hex value was inserted");
+    assert_eq!(error.kind, ErrorKind::InvalidEscape);
+    assert_eq!(error.len, 3);
+    assert_eq!(error.line, 1);
+    assert_eq!(error.col, 1);
+}
+
+#[test]
+/// Verify basic 4-digit unicode with no payload
+fn escape_unicode_four_incomplete() {
+    let mut tokens = tokenize(br#"\u"#);
+
+    let error = tokens.next().unwrap()
+        .expect_err("No codepoint was provided");
+    assert_eq!(error.kind, ErrorKind::UnterminatedEscape);
+    assert_eq!(error.len, 2);
+    assert_eq!(error.line, 1);
+    assert_eq!(error.col, 1);
+}
+
+#[test]
+/// Verify basic 8-digit unicode escape support
+fn escape_unicode_eight() {
+    let token = tokenize(br#"\U10FFFF"#).next().unwrap().unwrap();
+    assert_eq!(token.ttype, TokenType::Text);
+    assert_eq!(&*token.text, "\u{10FFFF}".as_bytes());
+    assert_eq!(token.line, 1);
+    assert_eq!(token.col, 1);
+}
+
+#[test]
+/// Verify 8-digit unicode with hex-like characters after
+fn escape_unicode_eight_adjacent() {
+    let mut tokens = tokenize(br#"\U0010FFFFABC"#).map(Result::unwrap);
+
+    let token = tokens.next().unwrap();
+    assert_eq!(token.ttype, TokenType::Text);
+    assert_eq!(&*token.text, "\u{10FFFF}".as_bytes());
+    assert_eq!(token.line, 1);
+    assert_eq!(token.col, 1);
+
+    let token = tokens.next().unwrap();
+    assert_eq!(token.ttype, TokenType::Text);
+    assert_eq!(&*token.text, b"ABC");
+    assert_eq!(token.line, 1);
+    assert_eq!(token.col, 11);
+}
+
+#[test]
+/// Verify 8-digit unicode with less than eight hex-like characters
+fn escape_unicode_eight_short() {
+    let mut tokens = tokenize(br#"\U12345go"#).map(Result::unwrap);
+
+    let token = tokens.next().unwrap();
+    assert_eq!(token.ttype, TokenType::Text);
+    assert_eq!(&*token.text, "\u{12345}".as_bytes());
+    assert_eq!(token.line, 1);
+    assert_eq!(token.col, 1);
+
+    let token = tokens.next().unwrap();
+    assert_eq!(token.ttype, TokenType::Text);
+    assert_eq!(&*token.text, b"go");
+    assert_eq!(token.line, 1);
+    assert_eq!(token.col, 8);
+}
+
+#[test]
+/// Verify 8-digit unicode with no valid hex characters
+fn escape_unicode_eight_invalid_hex() {
+    let mut tokens = tokenize(br#"\Ug123"#);
+
+    let error = tokens.next().unwrap()
+        .expect_err("An invalid hex value was inserted");
+    assert_eq!(error.kind, ErrorKind::InvalidEscape);
+    assert_eq!(error.len, 3);
+    assert_eq!(error.line, 1);
+    assert_eq!(error.col, 1);
+}
+
+#[test]
+/// Verify basic 8-digit unicode with no payload
+fn escape_unicode_eight_incomplete() {
+    let mut tokens = tokenize(br#"\U"#);
+
+    let error = tokens.next().unwrap()
+        .expect_err("No codepoint was provided");
+    assert_eq!(error.kind, ErrorKind::UnterminatedEscape);
+    assert_eq!(error.len, 2);
+    assert_eq!(error.line, 1);
+    assert_eq!(error.col, 1);
+}
+
+#[test]
+/// Verify illegal values for Unicode Scalar Values raise an error
+fn escape_unicode_illegal_value() {
+    let error = tokenize(br#"\uD800"#).next().unwrap()
+        .expect_err("USV range is 0x0..=0xD7FF and 0xE000..=10FFFF!");
+    assert_eq!(error.kind, ErrorKind::InvalidCodepoint);
+    assert_eq!(error.len, 6);
+    assert_eq!(error.line, 1);
+    assert_eq!(error.col, 1);
+}
+
+#[test]
+/// Verify illegal values for Unicode Scalar Values raise an error
+fn escape_unicode_out_of_range() {
+    let error = tokenize(br#"\U110000"#).next().unwrap()
+        .expect_err("USV range is 0x0..=0xD7FF and 0xE000..=10FFFF!");
+    assert_eq!(error.kind, ErrorKind::InvalidCodepoint);
+    assert_eq!(error.len, 8);
+    assert_eq!(error.line, 1);
+    assert_eq!(error.col, 1);
+}

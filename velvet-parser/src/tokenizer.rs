@@ -78,7 +78,7 @@ pub struct TokenizerError {
     pub len: u8,
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub enum ErrorKind {
     EndOfStream,
     UnexpectedSymbol {
