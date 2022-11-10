@@ -772,3 +772,73 @@ fn escape_unicode_out_of_range() {
     assert_eq!(error.line, 1);
     assert_eq!(error.col, 1);
 }
+
+#[test]
+/// Verify EOL slash is treated as a continuation
+fn escape_line_continuation() {
+    let mut tokens = tokenize(b"hello cat\\\natonic").map(Result::unwrap);
+
+    let token = tokens.next().unwrap();
+    let token = tokens.next().unwrap();
+    let token = tokens.next().unwrap();
+    assert_eq!(token.ttype, TokenType::Text);
+    assert_eq!(&*token.text, b"cat");
+
+    let token = tokens.next().unwrap();
+    assert_eq!(token.ttype, TokenType::Text);
+    assert_eq!(&*token.text, b"atonic");
+    assert_eq!(token.line, 2);
+    assert_eq!(token.col, 1);
+}
+
+#[test]
+/// Verify EOL slash is treated as a continuation but doesn't eat subsequent whitespace.
+fn escape_line_continuation_whitespace() {
+    let mut tokens = tokenize(b"hello cat\\\n  dog").map(Result::unwrap);
+
+    let token = tokens.next().unwrap();
+    let token = tokens.next().unwrap();
+    let token = tokens.next().unwrap();
+    assert_eq!(token.ttype, TokenType::Text);
+    assert_eq!(&*token.text, b"cat");
+
+    let token = tokens.next().unwrap();
+    assert_eq!(token.ttype, TokenType::Whitespace);
+    assert_eq!(token.line, 2);
+    assert_eq!(token.col, 1);
+
+    let token = tokens.next().unwrap();
+    assert_eq!(token.ttype, TokenType::Text);
+    assert_eq!(&*token.text, b"dog");
+    assert_eq!(token.line, 2);
+    assert_eq!(token.col, 3);
+}
+
+#[test]
+/// Verify escaped CR,NL is treated as a continuation
+fn escape_cr_line_continuation() {
+    let mut tokens = tokenize(b"hello cat\\\r\natonic").map(Result::unwrap);
+
+    let token = tokens.next().unwrap();
+    let token = tokens.next().unwrap();
+    let token = tokens.next().unwrap();
+    assert_eq!(token.ttype, TokenType::Text);
+    assert_eq!(&*token.text, b"cat");
+
+    let token = tokens.next().unwrap();
+    assert_eq!(token.ttype, TokenType::Text);
+    assert_eq!(&*token.text, b"atonic");
+    assert_eq!(token.line, 2);
+    assert_eq!(token.col, 1);
+}
+
+#[test]
+/// Verify escaped CR not followed by NL is treated as a plain CR, and that the CR is prepended to
+/// the same token as whatever text follows.
+fn escape_cr() {
+    let mut tokens = tokenize(b"\\\rhello").map(Result::unwrap);
+
+    let token = tokens.next().unwrap();
+    assert_eq!(token.ttype, TokenType::Text);
+    assert_eq!(&*token.text, b"\rhello");
+}

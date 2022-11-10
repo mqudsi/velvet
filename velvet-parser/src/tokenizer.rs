@@ -335,6 +335,7 @@ impl<'a> Tokenizer<'a> {
                         return self.error(ErrorKind::UnterminatedEscape, 1, 0);
                     }
                     self.consume_char();
+                    start = self.index;
                     // Safe to unwrap because we've already used `peek()` above successfully.
                     let byte = match read!(_).unwrap() {
                         b'a' => 0x07, // alert
