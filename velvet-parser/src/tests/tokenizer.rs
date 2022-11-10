@@ -842,3 +842,18 @@ fn escape_cr() {
     assert_eq!(token.ttype, TokenType::Text);
     assert_eq!(&*token.text, b"\rhello");
 }
+
+#[test]
+/// Verify default escapes evaluate to the escape character itself, prepended to whatever text
+/// follows (if any).
+fn escape_default() {
+    let token = tokenize(br#"\\"#).next().unwrap().unwrap();
+    assert_eq!(token.ttype, TokenType::Text);
+    assert_eq!(&*token.text, br#"\"#);
+    assert_eq!(token.col, 1);
+
+    let token = tokenize(br#"\kombat"#).next().unwrap().unwrap();
+    assert_eq!(token.ttype, TokenType::Text);
+    assert_eq!(&*token.text, br#"kombat"#);
+    assert_eq!(token.col, 1);
+}
