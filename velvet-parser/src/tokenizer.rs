@@ -31,15 +31,21 @@ pub enum TokenTag {
 
 pub struct Tokenizer<'a> {
     input: &'a [u8],
-    /// A stack of states
+    /// A stack of states. Should only be used with states that can stack and last for more than one
+    /// word at a time. Otherwise [`Tokenizer::temp_state`] should be assigned to instead.
     state: Vec<TokenizerState>,
-    /// A state that doesn't last more than one token and, when present, supercedes
+    /// A state that doesn't last more than one "word" and, when present, supercedes
     /// [`Tokenizer::state`].
+    ///
+    /// It is unset every time `have_fragment!()` is called when `have_fragment!()` returns false,
+    /// or when a bare `make_token!()` without a specific [`TokenType`] is provided.
     temp_state: Option<TokenizerState>,
+    /// The token to be returned the next time around, before the main tokenizer loop is called.
+    /// Always unset when used.
+    cached_token: Option<Token<'a>>,
     index: usize,
     line: u32,
     col: u32,
-    cached_token: Option<Token<'a>>,
 }
 
 #[derive(Debug, PartialEq)]
@@ -65,6 +71,8 @@ pub enum TokenType {
     Redirection,
     /// The append redirection operator `>>`
     Append,
+    /// The bare redirection operator `<`
+    StdinRedirection,
     /// Coalesced whitespace. Currently just spaces.
     Whitespace,
     Comment,
@@ -114,8 +122,8 @@ enum TokenizerState {
     Subshell,
     Brace,
     Index,
-    /// We need a separate state for variable name so we can properly tokenize an index after a
-    /// variable name in a quoted context.
+    /// We need a separate (temporary) state for variable name so we can properly tokenize an index
+    /// after a variable name in a quoted context.
     ///
     /// We can handle `echo "$(echo foo)[1]"` just fine, but `echo "$foo[1]"` is context-sensitive
     /// as here we have an index but in `echo "foo[1]"` we have no index.
@@ -128,6 +136,21 @@ enum TokenizerState {
     /// A temporary state, used to track the fd portion of a fd redirect, as in `echo foo>&21`
     /// (starting at the `2`).
     FdRedirect,
+}
+
+impl TokenizerState {
+    #[inline]
+    /// There are states that should never be pushed to [`Tokenizer::state`] and should instead only
+    /// be assigned to [`Tokenizer::temp_state`].
+    fn is_temp_state(&self) -> bool {
+        matches!(
+            self,
+            TokenizerState::VariableName
+                | TokenizerState::FileDescriptor
+                | TokenizerState::Redirect
+                | TokenizerState::FdRedirect
+        )
+    }
 }
 
 trait BufReaderExt {
@@ -193,7 +216,8 @@ impl<'a> Tokenizer<'a> {
     /// Peeks the current state from the top of [`TokenizerState::state`] or returns
     /// [`TokenizerState::None`].
     fn state(&self) -> TokenizerState {
-        self.temp_state.unwrap_or_else(|| self.state.last().cloned().unwrap_or(TokenizerState::None))
+        self.temp_state
+            .unwrap_or_else(|| self.state.last().cloned().unwrap_or(TokenizerState::None))
     }
 
     #[inline]
@@ -257,14 +281,10 @@ impl<'a> Tokenizer<'a> {
         macro_rules! make_token {
             () => {{
                 let ttype = match self.temp_state.take() {
-                    Some(TokenizerState::VariableName) => {
-                        TokenType::VariableName
-                    }
+                    Some(TokenizerState::VariableName) => TokenType::VariableName,
                     // TokenizerState::FileDescriptor only ends on > directly so it's not handled
                     // here, whereas TokenizerState::FdRedirect ends on whitespace so it is.
-                    Some(TokenizerState::FdRedirect) => {
-                        TokenType::FileDescriptor
-                    }
+                    Some(TokenizerState::FdRedirect) => TokenType::FileDescriptor,
                     _ => TokenType::Text,
                 };
                 make_token!(ttype)
@@ -282,7 +302,10 @@ impl<'a> Tokenizer<'a> {
                     token.ttype,
                     self.state()
                 );
-                assert_ne!(self.state(), TokenizerState::VariableName);
+                // Make sure we never have a temporary state pushed on to the actual state stack.
+                debug_assert!(
+                    self.state.last().is_none() || !self.state.last().unwrap().is_temp_state()
+                );
                 start = self.index;
                 token
             }};
@@ -331,7 +354,9 @@ impl<'a> Tokenizer<'a> {
 
             /// Determines if we need to return what we have in the buffer before returning a new
             /// token type. The magic is actually in the `false` branch where we need to end certain
-            /// contex-dependent tokenizer states before continuing.
+            /// contex-dependent tokenizer states before continuing; as such, every time
+            /// `have_fragment!()` is called and returns false, [`TokenizerState::temp_state`] is
+            /// reset.
             macro_rules! have_fragment {
                 () => {{
                     if start != self.index {
@@ -340,7 +365,7 @@ impl<'a> Tokenizer<'a> {
                         self.temp_state.take();
                         false
                     }
-                }}
+                }};
             };
 
             let c = self.input[self.index];
@@ -728,15 +753,9 @@ impl<'a> Tokenizer<'a> {
                     self.consume_char();
                     return Ok(make_token!(TokenType::SingleQuote));
                 }
-                (b'&', TokenizerState::Redirect) => {
-                    // This is the & that comes immediately after a redirect, e.g. `echo foo>&2`
-                    // If glued to the `>` then it is always a fd redirect, even if invalid.
-                    self.consume_char();
-                    let token = make_token!(TokenType::FdRedirection);
-                    self.temp_state = Some(TokenizerState::FdRedirect);
-                    return Ok(token);
-                }
                 (b'&', _) => {
+                    // The ampersand is heavily overloaded and can be a backgrounding symbol, a
+                    // "logical and" operator, plain text, or a file descriptor prefix.
                     if self.peek() == Some(b'&') {
                         // Peek before returning a fragment so we can return the & appended to the
                         // previous text if it's not going to be treated as a special symbol.
@@ -753,6 +772,13 @@ impl<'a> Tokenizer<'a> {
                         }
                         self.consume_char();
                         return Ok(make_token!(TokenType::Backgrounding));
+                    }
+                    if !have_fragment!() {
+                        self.consume_char();
+                        let token = make_token!(TokenType::FdRedirection);
+                        // Set us up to read more numbers as an fd
+                        self.temp_state = Some(TokenizerState::FdRedirect);
+                        return Ok(token);
                     }
                     // Else it is to be considered regular text and returned appended to what came
                     // before and/or comes after.
@@ -798,6 +824,16 @@ impl<'a> Tokenizer<'a> {
                     } else {
                         return Ok(make_token!(TokenType::Redirection));
                     }
+                }
+                (b'<', TokenizerState::None) => {
+                    // This can be only be an stdin redirection because fish doesn't support <<
+                    if have_fragment!() {
+                        return Ok(make_token!());
+                    }
+
+                    self.consume_char();
+                    self.temp_state = Some(TokenizerState::Redirect);
+                    return Ok(make_token!(TokenType::StdinRedirection));
                 }
                 _ => {}
             }
