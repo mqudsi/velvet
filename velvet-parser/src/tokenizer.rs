@@ -4,6 +4,9 @@ use std::borrow::Cow;
 use std::io::prelude::*;
 use std::io::{BufRead, BufReader};
 
+/// The path separator to recognize and use for tokenization purposes.
+const PATH_SEPARATOR: u8 = b'/';
+
 pub struct Token<'a> {
     pub ttype: TokenType,
     pub text: Cow<'a, [u8]>,
@@ -46,46 +49,6 @@ pub struct Tokenizer<'a> {
     index: usize,
     line: u32,
     col: u32,
-}
-
-#[derive(Debug, PartialEq)]
-pub enum TokenType {
-    Text,
-    DoubleQuote,
-    SingleQuote,
-    Dollar,
-    IndexStart,
-    SubshellStart,
-    BraceStart,
-    IndexEnd,
-    SubshellEnd,
-    BraceEnd,
-    Semicolon,
-    /// Coalesced `\n` or `\r\n`. Never a `\r` by itself.
-    EndOfLine,
-    /// The literal `|` but not in the case of `||` (see [`TokenType::Or`]).
-    Pipe,
-    /// A file descriptor such as `&2`
-    FileDescriptor,
-    /// The bare redirection operator `>`
-    Redirection,
-    /// The append redirection operator `>>`
-    Append,
-    /// The bare redirection operator `<`
-    StdinRedirection,
-    /// Coalesced whitespace. Currently just spaces.
-    Whitespace,
-    Comment,
-    Backgrounding,
-    /// Either a literal `&&` or a literal `and`.
-    LogicalAnd,
-    /// Either a literal `||` or a literal `or`. See also [`TokenType::Pipe`].
-    LogicalOr,
-    /// A literal `,` in the context of a brace expansion
-    BraceSeparator,
-    VariableName,
-    /// The `&` before a target/source fd
-    FdRedirection,
 }
 
 #[derive(Debug)]
@@ -136,12 +99,19 @@ enum TokenizerState {
     /// A temporary state, used to track the fd portion of a fd redirect, as in `echo foo>&21`
     /// (starting at the `2`).
     FdRedirect,
+    /// A temporary state for marking a word containing special characters triggering expansion
+    /// and/or substitution, such as `*`.
+    Glob,
+    /// A temporary state indicating we are possibly completing a home directory expansion. If a
+    /// tilde is followed by plain text, the entire thing is plain text but if it is followed by a
+    /// character that indicates the end of a sequence/token then it is an expansion.
+    HomeDirExpansion,
 }
 
 impl TokenizerState {
     #[inline]
     /// There are states that should never be pushed to [`Tokenizer::state`] and should instead only
-    /// be assigned to [`Tokenizer::temp_state`].
+    /// be assigned to [`Tokenizer::temp_state`]. This fn is only used for debug assertion purposes.
     fn is_temp_state(&self) -> bool {
         matches!(
             self,
@@ -149,8 +119,64 @@ impl TokenizerState {
                 | TokenizerState::FileDescriptor
                 | TokenizerState::Redirect
                 | TokenizerState::FdRedirect
+                | TokenizerState::Glob
+                | TokenizerState::HomeDirExpansion
         )
     }
+
+    /// These states only last a single character. If we are in one of these states and the token is
+    /// more than a single character, it is automatically downgraded to regular text.
+    fn is_single_char_state(&self) -> bool {
+        matches!(self, TokenizerState::HomeDirExpansion)
+    }
+}
+
+#[derive(Debug, PartialEq)]
+pub enum TokenType {
+    Text,
+    DoubleQuote,
+    SingleQuote,
+    Dollar,
+    IndexStart,
+    SubshellStart,
+    BraceStart,
+    IndexEnd,
+    SubshellEnd,
+    BraceEnd,
+    Semicolon,
+    /// Coalesced `\n` or `\r\n`. Never a `\r` by itself.
+    EndOfLine,
+    /// The literal `|` but not in the case of `||` (see [`TokenType::Or`]).
+    Pipe,
+    /// A file descriptor such as `&2`
+    FileDescriptor,
+    /// The bare redirection operator `>`
+    Redirection,
+    /// The append redirection operator `>>`
+    Append,
+    /// The bare redirection operator `<`
+    StdinRedirection,
+    /// Coalesced whitespace. Currently just spaces.
+    Whitespace,
+    Comment,
+    Backgrounding,
+    /// Either a literal `&&` or a literal `and`.
+    LogicalAnd,
+    /// Either a literal `||` or a literal `or`. See also [`TokenType::Pipe`].
+    LogicalOr,
+    /// A literal `,` in the context of a brace expansion
+    BraceSeparator,
+    VariableName,
+    /// The `&` before a target/source fd
+    FdRedirection,
+    /// A `~` at the start of a token in a context that indicates it should be expanded to the
+    /// current user's home directory.
+    HomeDirExpansion,
+    /// A combination of one or more of any of the characters that trigger expansion within a token.
+    /// May indicate the presence of `*` or `**`.
+    Glob,
+    /// A username following a `~` for home directory expansion.
+    Username,
 }
 
 trait BufReaderExt {
@@ -285,6 +311,8 @@ impl<'a> Tokenizer<'a> {
                     // TokenizerState::FileDescriptor only ends on > directly so it's not handled
                     // here, whereas TokenizerState::FdRedirect ends on whitespace so it is.
                     Some(TokenizerState::FdRedirect) => TokenType::FileDescriptor,
+                    Some(TokenizerState::Glob) => TokenType::Glob,
+                    Some(TokenizerState::HomeDirExpansion) => TokenType::Username,
                     _ => TokenType::Text,
                 };
                 make_token!(ttype)
@@ -368,6 +396,7 @@ impl<'a> Tokenizer<'a> {
                 }};
             };
 
+            let mut special_case = true;
             let c = self.input[self.index];
             eprintln!("c: {}, state: {:?}", c as char, self.state());
             match (c, self.state()) {
@@ -766,7 +795,10 @@ impl<'a> Tokenizer<'a> {
                         self.consume_char();
                         return Ok(make_token!(TokenType::LogicalAnd));
                     }
-                    if matches!(self.peek(), Some(b' ' | b'\r' | b'\n' | b'|' | b';') | None) {
+                    if matches!(
+                        self.peek(),
+                        Some(b' ' | b'\r' | b'\n' | b'|' | b';' | b'<' | b'>') | None
+                    ) {
                         if have_fragment!() {
                             return Ok(make_token!());
                         }
@@ -804,13 +836,14 @@ impl<'a> Tokenizer<'a> {
                     // (probably text).
                 }
                 (b'>', TokenizerState::FileDescriptor) => {
-                    // We have an actual file descriptor
+                    // We have an actual file descriptor after entering TS::FileDescriptor upon
+                    // encountering a numeric sequence above.
                     let token = make_token!(TokenType::FileDescriptor);
                     self.temp_state.take();
                     return Ok(token);
                     // We'll resume on '>' in TokenizerState::None
                 }
-                (b'>', TokenizerState::None) => {
+                (b'>', _) => {
                     // This can be appended directly to the text, e.g. `echo foo>/dev/null`
                     if have_fragment!() {
                         return Ok(make_token!());
@@ -825,7 +858,7 @@ impl<'a> Tokenizer<'a> {
                         return Ok(make_token!(TokenType::Redirection));
                     }
                 }
-                (b'<', TokenizerState::None) => {
+                (b'<', _) => {
                     // This can be only be an stdin redirection because fish doesn't support <<
                     if have_fragment!() {
                         return Ok(make_token!());
@@ -835,7 +868,44 @@ impl<'a> Tokenizer<'a> {
                     self.temp_state = Some(TokenizerState::Redirect);
                     return Ok(make_token!(TokenType::StdinRedirection));
                 }
-                _ => {}
+                (b'~', _) => {
+                    // Fish overloads ~ in a way that it's impossible to determine at tokenization
+                    // if it's going to be a special symbol or not, as it may expand to a different
+                    // user's home directory or be kept as plain text. We aren't going to support
+                    // that and will be classifying it as an expansion or plain text definitively.
+                    // See https://github.com/fish-shell/fish-shell/issues/9340
+                    if have_fragment!() {
+                        // If it's not at the start of a string, treat it as plain text.
+                        self.consume_char();
+                        continue;
+                    }
+
+                    self.consume_char();
+                    let token = make_token!(TokenType::HomeDirExpansion);
+                    self.temp_state = Some(TokenizerState::HomeDirExpansion);
+                    return Ok(token);
+                }
+                (PATH_SEPARATOR, TokenizerState::None | TokenizerState::Glob) => {
+                    // Handle this regularly, to differentiate from the next match block below.
+                }
+                (PATH_SEPARATOR, _) => {
+                    // Make sure we end all special states on a path separator
+                    if have_fragment!() {
+                        return Ok(make_token!());
+                    }
+                }
+                (b'*', _) => {
+                    // This isn't just regular text, it's a glob/expansion. Don't start a new token,
+                    // but convert the entirety of the current token to a glob.
+                    self.temp_state = Some(TokenizerState::Glob);
+                    // Don't end the token here; keep reading until the natural end of the sequence,
+                    // when/where we'll return a TT::Glob instead.
+                }
+                _ => {
+                    // Indicate that no special case matched, allowing us to determine whether or
+                    // not to reset the internal temporary state.
+                    special_case = false;
+                }
             }
 
             match self.read() {

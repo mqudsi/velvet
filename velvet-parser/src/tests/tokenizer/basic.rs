@@ -333,3 +333,140 @@ fn whitespace_coalesce_lines() {
     });
     assert_eq!(max_consecutive, 1);
 }
+
+#[test]
+/// Verify that tokens containing glob-match characters are classified as globs, not text.
+fn expansion_glob_token() {
+    let token = tokenize(b"a*c").next().unwrap().unwrap();
+    assert_eq!(token.ttype, TokenType::Glob);
+    assert_eq!(&*token.text, b"a*c");
+}
+
+#[test]
+/// Verify that tokens with multiple glob characters are not broken up into separate tokens.
+fn expansion_glob_token_multi() {
+    let token = tokenize(b"a*c*e").next().unwrap().unwrap();
+    assert_eq!(token.ttype, TokenType::Glob);
+    assert_eq!(&*token.text, b"a*c*e");
+}
+
+#[test]
+/// Verify globs are not split up on path separators
+fn expansion_glob_multiple_paths() {
+    let token = tokenize(b"ab*/foo*.txt").next().unwrap().unwrap();
+    assert_eq!(token.ttype, TokenType::Glob);
+    assert_eq!(&*token.text, b"ab*/foo*.txt");
+}
+
+#[test]
+/// Verify that a tilde at the start of a string is considered a home directory expansion.
+fn expansion_tilde_home_dir() {
+    let token = tokenize(b"~").next().unwrap().unwrap();
+    assert_eq!(token.ttype, TokenType::HomeDirExpansion);
+    assert_eq!(&*token.text, b"~");
+}
+
+#[test]
+/// Verify that a tilde followed by certain special characters is still considered to be a home
+/// directory expansion.
+fn expansion_tilde_home_dir_redirect() {
+    let mut tokens = tokenize(b"echo ~>tmp.txt").map(Result::unwrap);
+
+    assert_eq!(tokens.next().unwrap().ttype, TokenType::Text);
+    assert_eq!(tokens.next().unwrap().ttype, TokenType::Whitespace);
+
+    let token = tokens.next().unwrap();
+    assert_eq!(token.ttype, TokenType::HomeDirExpansion);
+    assert_eq!(&*token.text, b"~");
+
+    let token = tokens.next().unwrap();
+    assert_eq!(token.ttype, TokenType::Redirection);
+    assert_eq!(&*token.text, b">");
+}
+
+#[test]
+/// Verify that a tilde followed by certain special characters is still considered to be a home
+/// directory expansion.
+fn expansion_tilde_home_dir_pipe() {
+    let mut tokens = tokenize(b"echo ~|cat").map(Result::unwrap).skip(2);
+
+    let token = tokens.next().unwrap();
+    assert_eq!(token.ttype, TokenType::HomeDirExpansion);
+    assert_eq!(&*token.text, b"~");
+
+    let token = tokens.next().unwrap();
+    assert_eq!(token.ttype, TokenType::Pipe);
+    assert_eq!(&*token.text, b"|");
+}
+
+#[test]
+/// Verify that a tilde followed by a username is treated as an expansion and a username.
+fn expansion_tilde_home_dir_username() {
+    let mut tokens = tokenize(b"echo ~alice").map(Result::unwrap).skip(2);
+
+    let token = tokens.next().unwrap();
+    assert_eq!(token.ttype, TokenType::HomeDirExpansion);
+    assert_eq!(&*token.text, b"~");
+
+    let token = tokens.next().unwrap();
+    assert_eq!(token.ttype, TokenType::Username);
+    assert_eq!(&*token.text, b"alice");
+}
+
+#[test]
+/// Verify that a tilde followed by a username and path is treated as such.
+fn expansion_tilde_home_dir_username_path() {
+    let mut tokens = tokenize(b"echo ~alice/foo").map(Result::unwrap).skip(2);
+
+    let token = tokens.next().unwrap();
+    assert_eq!(token.ttype, TokenType::HomeDirExpansion);
+    assert_eq!(&*token.text, b"~");
+
+    let token = tokens.next().unwrap();
+    assert_eq!(token.ttype, TokenType::Username);
+    assert_eq!(&*token.text, b"alice");
+
+    let token = tokens.next().unwrap();
+    assert_eq!(token.ttype, TokenType::Text);
+    assert_eq!(&*token.text, b"/foo");
+}
+
+#[test]
+/// Verify that a tilde followed by certain special characters is still considered to be a home
+/// directory expansion.
+fn expansion_tilde_home_dir_backgrounded() {
+    let mut tokens = tokenize(b"echo ~&").map(Result::unwrap).skip(2);
+
+    let token = tokens.next().unwrap();
+    assert_eq!(token.ttype, TokenType::HomeDirExpansion);
+    assert_eq!(&*token.text, b"~");
+
+    let token = tokens.next().unwrap();
+    assert_eq!(token.ttype, TokenType::Backgrounding);
+    assert_eq!(&*token.text, b"&");
+}
+
+#[test]
+/// Ensure a tilde followed by the path separator is considered a home directory expansion followed
+/// by text representing the path (separately).
+fn expansion_tilde_home_dir_path() {
+    let mut tokens = tokenize(b"~/").map(Result::unwrap);
+    let token = tokens.next().unwrap();
+    assert_eq!(token.ttype, TokenType::HomeDirExpansion);
+    assert_eq!(&*token.text, b"~");
+    let token = tokens.next().unwrap();
+    assert_eq!(token.ttype, TokenType::Text);
+    assert_eq!(&*token.text, b"/");
+}
+
+#[test]
+/// Verify tilde isn't considered to be special text in other circumstances.
+fn expansion_tilde_not_home_dir() {
+    let token = tokenize(b"hello~").next().unwrap().unwrap();
+    assert_eq!(token.ttype, TokenType::Text);
+    assert_eq!(&*token.text, b"hello~");
+
+    let token = tokenize(b"he~llo").next().unwrap().unwrap();
+    assert_eq!(token.ttype, TokenType::Text);
+    assert_eq!(&*token.text, b"he~llo");
+}
