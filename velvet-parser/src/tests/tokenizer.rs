@@ -869,3 +869,272 @@ fn escape_default() {
     assert_eq!(&*token.text, br#"kombat"#);
     assert_eq!(token.col, 1);
 }
+
+#[test]
+fn redirect_basic() {
+    let mut tokens = tokenize(b"echo foo > file1")
+        .map(Result::unwrap)
+        .skip_while(|t| t.ttype != TokenType::Redirection);
+
+    let token = tokens.next().unwrap();
+    assert_eq!(token.ttype, TokenType::Redirection);
+    assert_eq!(&*token.text, b">");
+
+    let token = tokens.next().unwrap();
+    assert_eq!(token.ttype, TokenType::Whitespace);
+
+    let token = tokens.next().unwrap();
+    assert_eq!(token.ttype, TokenType::Text);
+    assert_eq!(&*token.text, b"file1");
+}
+
+#[test]
+fn redirect_append_basic() {
+    let mut tokens = tokenize(b"echo foo >> file1")
+        .map(Result::unwrap)
+        .skip_while(|t| t.ttype != TokenType::Append);
+
+    let token = tokens.next().unwrap();
+    assert_eq!(token.ttype, TokenType::Append);
+    assert_eq!(&*token.text, b">>");
+
+    let token = tokens.next().unwrap();
+    assert_eq!(token.ttype, TokenType::Whitespace);
+
+    let token = tokens.next().unwrap();
+    assert_eq!(token.ttype, TokenType::Text);
+    assert_eq!(&*token.text, b"file1");
+}
+
+#[test]
+fn redirect_no_space_right() {
+    let mut tokens = tokenize(b"echo foo >file1")
+        .map(Result::unwrap)
+        .skip_while(|t| t.ttype != TokenType::Redirection);
+
+    let token = tokens.next().unwrap();
+    assert_eq!(token.ttype, TokenType::Redirection);
+    assert_eq!(&*token.text, b">");
+
+    let token = tokens.next().unwrap();
+    assert_eq!(token.ttype, TokenType::Text);
+    assert_eq!(&*token.text, b"file1");
+}
+
+#[test]
+fn redirect_append_no_space_right() {
+    let mut tokens = tokenize(b"echo foo >>file1")
+        .map(Result::unwrap)
+        .skip_while(|t| t.ttype != TokenType::Append);
+
+    let token = tokens.next().unwrap();
+    assert_eq!(token.ttype, TokenType::Append);
+    assert_eq!(&*token.text, b">>");
+
+    let token = tokens.next().unwrap();
+    assert_eq!(token.ttype, TokenType::Text);
+    assert_eq!(&*token.text, b"file1");
+}
+
+#[test]
+fn redirect_no_space_left() {
+    let mut tokens = tokenize(b"echo foo> file1")
+        .map(Result::unwrap)
+        .skip_while(|t| t.ttype != TokenType::Redirection);
+
+    let token = tokens.next().unwrap();
+    assert_eq!(token.ttype, TokenType::Redirection);
+    assert_eq!(&*token.text, b">");
+
+    let token = tokens.next().unwrap();
+    assert_eq!(token.ttype, TokenType::Whitespace);
+
+    let token = tokens.next().unwrap();
+    assert_eq!(token.ttype, TokenType::Text);
+    assert_eq!(&*token.text, b"file1");
+}
+
+#[test]
+fn redirect_append_no_space_left() {
+    let mut tokens = tokenize(b"echo foo>> file1")
+        .map(Result::unwrap)
+        .skip_while(|t| t.ttype != TokenType::Append);
+
+    let token = tokens.next().unwrap();
+    assert_eq!(token.ttype, TokenType::Append);
+    assert_eq!(&*token.text, b">>");
+
+    let token = tokens.next().unwrap();
+    assert_eq!(token.ttype, TokenType::Whitespace);
+
+    let token = tokens.next().unwrap();
+    assert_eq!(token.ttype, TokenType::Text);
+    assert_eq!(&*token.text, b"file1");
+}
+
+#[test]
+fn redirect_no_space() {
+    let mut tokens = tokenize(b"echo foo>file1")
+        .map(Result::unwrap)
+        .skip_while(|t| t.ttype != TokenType::Redirection);
+
+    let token = tokens.next().unwrap();
+    assert_eq!(token.ttype, TokenType::Redirection);
+    assert_eq!(&*token.text, b">");
+
+    let token = tokens.next().unwrap();
+    assert_eq!(token.ttype, TokenType::Text);
+    assert_eq!(&*token.text, b"file1");
+}
+
+#[test]
+fn redirect_append_no_space() {
+    let mut tokens = tokenize(b"echo foo>>file1")
+        .map(Result::unwrap)
+        .skip_while(|t| t.ttype != TokenType::Append);
+
+    let token = tokens.next().unwrap();
+    assert_eq!(token.ttype, TokenType::Append);
+    assert_eq!(&*token.text, b">>");
+
+    let token = tokens.next().unwrap();
+    assert_eq!(token.ttype, TokenType::Text);
+    assert_eq!(&*token.text, b"file1");
+}
+
+#[test]
+fn redirect_from_fd() {
+    let mut tokens = tokenize(b"echo 21>file1")
+        .map(Result::unwrap)
+        .skip(2);
+
+    let token = tokens.next().unwrap();
+    assert_eq!(token.ttype, TokenType::FileDescriptor);
+    assert_eq!(&*token.text, b"21");
+
+    let token = tokens.next().unwrap();
+    assert_eq!(token.ttype, TokenType::Redirection);
+    assert_eq!(&*token.text, b">");
+
+    let token = tokens.next().unwrap();
+    assert_eq!(token.ttype, TokenType::Text);
+    assert_eq!(&*token.text, b"file1");
+}
+
+#[test]
+fn redirect_append_from_fd() {
+    let mut tokens = tokenize(b"echo 21>>file1")
+        .map(Result::unwrap)
+        .skip(2);
+
+    let token = tokens.next().unwrap();
+    assert_eq!(token.ttype, TokenType::FileDescriptor);
+    assert_eq!(&*token.text, b"21");
+
+    let token = tokens.next().unwrap();
+    assert_eq!(token.ttype, TokenType::Append);
+    assert_eq!(&*token.text, b">>");
+
+    let token = tokens.next().unwrap();
+    assert_eq!(token.ttype, TokenType::Text);
+    assert_eq!(&*token.text, b"file1");
+}
+
+#[test]
+fn redirect_to_fd() {
+    let mut tokens = tokenize(b"echo 21>&file")
+        .map(Result::unwrap)
+        .skip(2);
+
+    let token = tokens.next().unwrap();
+    assert_eq!(token.ttype, TokenType::FileDescriptor);
+    assert_eq!(&*token.text, b"21");
+
+    let token = tokens.next().unwrap();
+    assert_eq!(token.ttype, TokenType::Redirection);
+    assert_eq!(&*token.text, b">");
+
+    let token = tokens.next().unwrap();
+    assert_eq!(token.ttype, TokenType::FdRedirection);
+    assert_eq!(&*token.text, b"&");
+
+    // This is not a valid FD but it should still be classified as one.
+    let token = tokens.next().unwrap();
+    assert_eq!(token.ttype, TokenType::FileDescriptor);
+    assert_eq!(&*token.text, b"file");
+}
+
+// This test differs from fish's behavior but it's ok.
+// #[test]
+// fn redirect_to_floating_fd() {
+//     // This example does NOT redirect to an fd, but it looks like it does.
+//     // We should return the whitespace and the fd, but the parser should reject this as an invalid
+//     // state.
+//     let mut tokens = tokenize(b"echo 21> &file")
+//         .map(Result::unwrap)
+//         .skip(2);
+//
+//     let token = tokens.next().unwrap();
+//     assert_eq!(token.ttype, TokenType::FileDescriptor);
+//     assert_eq!(&*token.text, b"21");
+//
+//     let token = tokens.next().unwrap();
+//     assert_eq!(token.ttype, TokenType::Redirection);
+//     assert_eq!(&*token.text, b">");
+//
+//     let token = tokens.next().unwrap();
+//     assert_eq!(token.ttype, TokenType::Whitespace);
+//
+//     let token = tokens.next().unwrap();
+//     assert_eq!(token.ttype, TokenType::FdRedirection);
+//     assert_eq!(&*token.text, b"&");
+//
+//     // This is not a valid FD but it should still be classified as one.
+//     let token = tokens.next().unwrap();
+//     assert_eq!(token.ttype, TokenType::FileDescriptor);
+//     assert_eq!(&*token.text, b"file");
+// }
+
+#[test]
+fn redirect_not_an_fd() {
+    let mut tokens = tokenize(b"hello 21 > 22")
+        .map(Result::unwrap)
+        .skip(2);
+
+    let token = tokens.next().unwrap();
+    assert_eq!(token.ttype, TokenType::Text);
+    assert_eq!(&*token.text, b"21");
+
+    let token = tokens.next().unwrap();
+    assert_eq!(token.ttype, TokenType::Whitespace);
+
+    let token = tokens.next().unwrap();
+    assert_eq!(token.ttype, TokenType::Redirection);
+    assert_eq!(&*token.text, b">");
+
+    let token = tokens.next().unwrap();
+    assert_eq!(token.ttype, TokenType::Whitespace);
+
+    let token = tokens.next().unwrap();
+    assert_eq!(token.ttype, TokenType::Text);
+    assert_eq!(&*token.text, b"22");
+}
+
+#[test]
+fn redirect_not_from_fd() {
+    let mut tokens = tokenize(b"echo e&2>/dev/tty")
+        .map(Result::unwrap)
+        .skip(2);
+
+    let token = tokens.next().unwrap();
+    assert_eq!(token.ttype, TokenType::Text);
+    assert_eq!(&*token.text, b"e&2");
+
+    let token = tokens.next().unwrap();
+    assert_eq!(token.ttype, TokenType::Redirection);
+    assert_eq!(&*token.text, b">");
+
+    let token = tokens.next().unwrap();
+    assert_eq!(token.ttype, TokenType::Text);
+    assert_eq!(&*token.text, b"/dev/tty");
+}

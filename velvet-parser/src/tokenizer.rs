@@ -33,6 +33,9 @@ pub struct Tokenizer<'a> {
     input: &'a [u8],
     /// A stack of states
     state: Vec<TokenizerState>,
+    /// A state that doesn't last more than one token and, when present, supercedes
+    /// [`Tokenizer::state`].
+    temp_state: Option<TokenizerState>,
     index: usize,
     line: u32,
     col: u32,
@@ -56,7 +59,12 @@ pub enum TokenType {
     EndOfLine,
     /// The literal `|` but not in the case of `||` (see [`TokenType::Or`]).
     Pipe,
+    /// A file descriptor such as `&2`
+    FileDescriptor,
+    /// The bare redirection operator `>`
     Redirection,
+    /// The append redirection operator `>>`
+    Append,
     /// Coalesced whitespace. Currently just spaces.
     Whitespace,
     Comment,
@@ -68,6 +76,8 @@ pub enum TokenType {
     /// A literal `,` in the context of a brace expansion
     BraceSeparator,
     VariableName,
+    /// The `&` before a target/source fd
+    FdRedirection,
 }
 
 #[derive(Debug)]
@@ -110,6 +120,14 @@ enum TokenizerState {
     /// We can handle `echo "$(echo foo)[1]"` just fine, but `echo "$foo[1]"` is context-sensitive
     /// as here we have an index but in `echo "foo[1]"` we have no index.
     VariableName,
+    /// A temporary state, used to determine if a sequence of numbers is a file descriptor (such as
+    /// in the case of `echo foo 1> /dev/null`) or a regular text token.
+    FileDescriptor,
+    /// A temporary state, used to identify a destination fd like in `echo foo >&2`.
+    Redirect,
+    /// A temporary state, used to track the fd portion of a fd redirect, as in `echo foo>&21`
+    /// (starting at the `2`).
+    FdRedirect,
 }
 
 trait BufReaderExt {
@@ -163,6 +181,7 @@ impl<'a> Tokenizer<'a> {
         Tokenizer {
             input: source,
             state: Vec::new(),
+            temp_state: None,
             index: 0,
             line: 1,
             col: 1,
@@ -174,7 +193,7 @@ impl<'a> Tokenizer<'a> {
     /// Peeks the current state from the top of [`TokenizerState::state`] or returns
     /// [`TokenizerState::None`].
     fn state(&self) -> TokenizerState {
-        self.state.last().cloned().unwrap_or(TokenizerState::None)
+        self.temp_state.unwrap_or_else(|| self.state.last().cloned().unwrap_or(TokenizerState::None))
     }
 
     #[inline]
@@ -237,10 +256,14 @@ impl<'a> Tokenizer<'a> {
 
         macro_rules! make_token {
             () => {{
-                let ttype = match self.state() {
-                    TokenizerState::VariableName => {
-                        self.state.pop();
+                let ttype = match self.temp_state.take() {
+                    Some(TokenizerState::VariableName) => {
                         TokenType::VariableName
+                    }
+                    // TokenizerState::FileDescriptor only ends on > directly so it's not handled
+                    // here, whereas TokenizerState::FdRedirect ends on whitespace so it is.
+                    Some(TokenizerState::FdRedirect) => {
+                        TokenType::FileDescriptor
                     }
                     _ => TokenType::Text,
                 };
@@ -314,13 +337,7 @@ impl<'a> Tokenizer<'a> {
                     if start != self.index {
                         true
                     } else {
-                        // In order to correctly tokenize a quoted variable name with an index like
-                        // `echo $foo[1]` we need to push a `VariableName` state into the stack so we
-                        // can detect and handle the index as non-text. We don't need it to handle
-                        // something like `echo "$(foo)[1]" because a simple peek will suffice.
-                        if self.state() == TokenizerState::VariableName {
-                            self.state.pop();
-                        }
+                        self.temp_state.take();
                         false
                     }
                 }}
@@ -589,7 +606,7 @@ impl<'a> Tokenizer<'a> {
                         self.state.push(TokenizerState::Subshell);
                         self.cached_token = Some(make_token!(TokenType::SubshellStart));
                     } else {
-                        self.state.push(TokenizerState::VariableName);
+                        self.temp_state = Some(TokenizerState::VariableName);
                     }
                     return Ok(dollar);
                 }
@@ -603,7 +620,7 @@ impl<'a> Tokenizer<'a> {
                         let token = make_token!();
                         // We need to explicitly reset the VariableName state because the default
                         // make_token! macro pops it off our stack.
-                        self.state.push(TokenizerState::VariableName);
+                        self.temp_state = Some(TokenizerState::VariableName);
                         return Ok(token);
                     }
                     self.state.push(TokenizerState::Index);
@@ -711,6 +728,14 @@ impl<'a> Tokenizer<'a> {
                     self.consume_char();
                     return Ok(make_token!(TokenType::SingleQuote));
                 }
+                (b'&', TokenizerState::Redirect) => {
+                    // This is the & that comes immediately after a redirect, e.g. `echo foo>&2`
+                    // If glued to the `>` then it is always a fd redirect, even if invalid.
+                    self.consume_char();
+                    let token = make_token!(TokenType::FdRedirection);
+                    self.temp_state = Some(TokenizerState::FdRedirect);
+                    return Ok(token);
+                }
                 (b'&', _) => {
                     if self.peek() == Some(b'&') {
                         // Peek before returning a fragment so we can return the & appended to the
@@ -742,6 +767,37 @@ impl<'a> Tokenizer<'a> {
                         return Ok(make_token!(TokenType::LogicalOr));
                     }
                     return Ok(make_token!(TokenType::Pipe));
+                }
+                (b'0'..=b'9', TokenizerState::None) => {
+                    // This is possibly a file descriptor like in the case of the `1` in `echo foo 1>&2`
+                    // It's only the case if the number is the start of the token.
+                    if !have_fragment!() {
+                        self.temp_state = Some(TokenizerState::FileDescriptor);
+                    }
+                    // Otherwise just append to the existing fragment and treat as whatever
+                    // (probably text).
+                }
+                (b'>', TokenizerState::FileDescriptor) => {
+                    // We have an actual file descriptor
+                    let token = make_token!(TokenType::FileDescriptor);
+                    self.temp_state.take();
+                    return Ok(token);
+                    // We'll resume on '>' in TokenizerState::None
+                }
+                (b'>', TokenizerState::None) => {
+                    // This can be appended directly to the text, e.g. `echo foo>/dev/null`
+                    if have_fragment!() {
+                        return Ok(make_token!());
+                    }
+
+                    self.consume_char();
+                    self.temp_state = Some(TokenizerState::Redirect);
+                    if read!(b'>').is_ok() {
+                        // This is actually an append redirection
+                        return Ok(make_token!(TokenType::Append));
+                    } else {
+                        return Ok(make_token!(TokenType::Redirection));
+                    }
                 }
                 _ => {}
             }
