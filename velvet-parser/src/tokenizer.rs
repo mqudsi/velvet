@@ -210,7 +210,10 @@ impl<'a> Tokenizer<'a> {
         Err(TokenizerError {
             kind,
             line: self.line,
-            col: (TryInto::<i32>::try_into(self.col).unwrap() + TryInto::<i32>::try_into(offset).unwrap()).try_into().unwrap(),
+            col: (TryInto::<i32>::try_into(self.col).unwrap()
+                + TryInto::<i32>::try_into(offset).unwrap())
+            .try_into()
+            .unwrap(),
             len: len.try_into().unwrap(),
         })
     }
@@ -401,10 +404,8 @@ impl<'a> Tokenizer<'a> {
                             let hex_chars = &hex_chars[0..hex_count];
                             if hex_count == 0 {
                                 return match self.read() {
-                                    None => {
-                                        self.error(ErrorKind::UnterminatedEscape, 2, -2)
-                                    }
-                                    _ => self.error(ErrorKind::InvalidEscape, 3, -2)
+                                    None => self.error(ErrorKind::UnterminatedEscape, 2, -2),
+                                    _ => self.error(ErrorKind::InvalidEscape, 3, -2),
                                 };
                             }
                             // Convert from hex to a 16-bit value. Safe to unwrap because we've
@@ -417,7 +418,11 @@ impl<'a> Tokenizer<'a> {
                             let codepoint = match char::from_u32(codepoint as u32) {
                                 Some(c) => c,
                                 None => {
-                                    return self.error(ErrorKind::InvalidCodepoint, 2 + hex_count, -2 - hex_count as i32);
+                                    return self.error(
+                                        ErrorKind::InvalidCodepoint,
+                                        2 + hex_count,
+                                        -2 - hex_count as i32,
+                                    );
                                 }
                             };
 
@@ -443,9 +448,7 @@ impl<'a> Tokenizer<'a> {
                             let hex_chars = &hex_chars[0..hex_count];
                             if hex_count == 0 {
                                 return match self.read() {
-                                    None => {
-                                        self.error(ErrorKind::UnterminatedEscape, 2, -2)
-                                    }
+                                    None => self.error(ErrorKind::UnterminatedEscape, 2, -2),
                                     _ => self.error(ErrorKind::InvalidEscape, 3, -2),
                                 };
                             }
@@ -458,7 +461,11 @@ impl<'a> Tokenizer<'a> {
                             // than a surrogate codepoint).
                             let codepoint = match char::from_u32(codepoint) {
                                 Some(c) => c,
-                                None => self.error(ErrorKind::InvalidCodepoint, 2 + hex_count, -2 - hex_count as i32)?,
+                                None => self.error(
+                                    ErrorKind::InvalidCodepoint,
+                                    2 + hex_count,
+                                    -2 - hex_count as i32,
+                                )?,
                             };
 
                             return Ok(Token {
@@ -508,8 +515,11 @@ impl<'a> Tokenizer<'a> {
                             // Safe to unwrap since a 3-digit octal number has a max of 0x1FF
                             let value = u16::from_str_radix(octal_chars, 8).unwrap();
                             if value > 0o177 {
-                                return
-                                    self.error(ErrorKind::InvalidAscii, 1 + octal_count, -1 - octal_count as i32);
+                                return self.error(
+                                    ErrorKind::InvalidAscii,
+                                    1 + octal_count,
+                                    -1 - octal_count as i32,
+                                );
                             }
                             value as u8
                         }
@@ -741,11 +751,11 @@ impl<'a> Tokenizer<'a> {
                     self.index += 1;
                     self.line += 1;
                     self.col = 1;
-                },
+                }
                 _ => {
                     self.index += 1;
                     self.col += 1;
-                },
+                }
             }
 
             // TODO: Handle UTF-8 fragments as incomplete tokens

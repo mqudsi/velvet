@@ -658,7 +658,9 @@ fn escape_unicode_four_short() {
 fn escape_unicode_four_invalid_hex() {
     let mut tokens = tokenize(br#"\ug123"#);
 
-    let error = tokens.next().unwrap()
+    let error = tokens
+        .next()
+        .unwrap()
         .expect_err("An invalid hex value was inserted");
     assert_eq!(error.kind, ErrorKind::InvalidEscape);
     assert_eq!(error.len, 3);
@@ -671,7 +673,9 @@ fn escape_unicode_four_invalid_hex() {
 fn escape_unicode_four_incomplete() {
     let mut tokens = tokenize(br#"\u"#);
 
-    let error = tokens.next().unwrap()
+    let error = tokens
+        .next()
+        .unwrap()
         .expect_err("No codepoint was provided");
     assert_eq!(error.kind, ErrorKind::UnterminatedEscape);
     assert_eq!(error.len, 2);
@@ -730,7 +734,9 @@ fn escape_unicode_eight_short() {
 fn escape_unicode_eight_invalid_hex() {
     let mut tokens = tokenize(br#"\Ug123"#);
 
-    let error = tokens.next().unwrap()
+    let error = tokens
+        .next()
+        .unwrap()
         .expect_err("An invalid hex value was inserted");
     assert_eq!(error.kind, ErrorKind::InvalidEscape);
     assert_eq!(error.len, 3);
@@ -743,7 +749,9 @@ fn escape_unicode_eight_invalid_hex() {
 fn escape_unicode_eight_incomplete() {
     let mut tokens = tokenize(br#"\U"#);
 
-    let error = tokens.next().unwrap()
+    let error = tokens
+        .next()
+        .unwrap()
         .expect_err("No codepoint was provided");
     assert_eq!(error.kind, ErrorKind::UnterminatedEscape);
     assert_eq!(error.len, 2);
@@ -754,7 +762,9 @@ fn escape_unicode_eight_incomplete() {
 #[test]
 /// Verify illegal values for Unicode Scalar Values raise an error
 fn escape_unicode_illegal_value() {
-    let error = tokenize(br#"\uD800"#).next().unwrap()
+    let error = tokenize(br#"\uD800"#)
+        .next()
+        .unwrap()
         .expect_err("USV range is 0x0..=0xD7FF and 0xE000..=10FFFF!");
     assert_eq!(error.kind, ErrorKind::InvalidCodepoint);
     assert_eq!(error.len, 6);
@@ -765,7 +775,9 @@ fn escape_unicode_illegal_value() {
 #[test]
 /// Verify illegal values for Unicode Scalar Values raise an error
 fn escape_unicode_out_of_range() {
-    let error = tokenize(br#"\U110000"#).next().unwrap()
+    let error = tokenize(br#"\U110000"#)
+        .next()
+        .unwrap()
         .expect_err("USV range is 0x0..=0xD7FF and 0xE000..=10FFFF!");
     assert_eq!(error.kind, ErrorKind::InvalidCodepoint);
     assert_eq!(error.len, 8);
