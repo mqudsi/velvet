@@ -162,6 +162,84 @@ fn variable_index() {
 }
 
 #[test]
+/// Verify variables are ended at certain symbols.
+fn variable_path_separated() {
+    let mut tokens = tokenize(b"foo/$var1/$var2/$bar.txt")
+        .map(Result::unwrap);
+
+    let token = tokens.next().unwrap();
+    assert_eq!(token.ttype, TokenType::Text);
+    assert_eq!(&*token.text, b"foo/");
+
+    let token = tokens.next().unwrap();
+    assert_eq!(token.ttype, TokenType::Dollar);
+
+    let token = tokens.next().unwrap();
+    assert_eq!(token.ttype, TokenType::VariableName);
+    assert_eq!(&*token.text, b"var1");
+
+    let token = tokens.next().unwrap();
+    assert_eq!(token.ttype, TokenType::Text);
+    assert_eq!(&*token.text, b"/");
+
+    let token = tokens.next().unwrap();
+    assert_eq!(token.ttype, TokenType::Dollar);
+
+    let token = tokens.next().unwrap();
+    assert_eq!(token.ttype, TokenType::VariableName);
+    assert_eq!(&*token.text, b"var2");
+
+    let token = tokens.next().unwrap();
+    assert_eq!(token.ttype, TokenType::Text);
+    assert_eq!(&*token.text, b"/");
+
+    let token = tokens.next().unwrap();
+    assert_eq!(token.ttype, TokenType::Dollar);
+
+    let token = tokens.next().unwrap();
+    assert_eq!(token.ttype, TokenType::VariableName);
+    assert_eq!(&*token.text, b"bar");
+
+    let token = tokens.next().unwrap();
+    assert_eq!(token.ttype, TokenType::Text);
+    assert_eq!(&*token.text, b".txt");
+}
+
+#[test]
+/// Verify variables are ended at certain symbols.
+fn variable_quote_interpolation() {
+    let mut tokens = tokenize(br#"$foo"quoted$var"$bar"#)
+        .map(Result::unwrap);
+
+    let token = tokens.next().unwrap();
+    assert_eq!(token.ttype, TokenType::Dollar);
+    let token = tokens.next().unwrap();
+    assert_eq!(token.ttype, TokenType::VariableName);
+    assert_eq!(&*token.text, b"foo");
+
+    let token = tokens.next().unwrap();
+    assert_eq!(token.ttype, TokenType::DoubleQuote);
+
+    let token = tokens.next().unwrap();
+    assert_eq!(token.ttype, TokenType::Text);
+    assert_eq!(&*token.text, b"quoted");
+    let token = tokens.next().unwrap();
+    assert_eq!(token.ttype, TokenType::Dollar);
+    let token = tokens.next().unwrap();
+    assert_eq!(token.ttype, TokenType::VariableName);
+    assert_eq!(&*token.text, b"var");
+
+    let token = tokens.next().unwrap();
+    assert_eq!(token.ttype, TokenType::DoubleQuote);
+
+    let token = tokens.next().unwrap();
+    assert_eq!(token.ttype, TokenType::Dollar);
+    let token = tokens.next().unwrap();
+    assert_eq!(token.ttype, TokenType::VariableName);
+    assert_eq!(&*token.text, b"bar");
+}
+
+#[test]
 /// Ensure variable names are found in a quoted context.
 fn quoted_variable_name() {
     let input = br#"echo "hello $world""#;

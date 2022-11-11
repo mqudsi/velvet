@@ -94,8 +94,6 @@ enum TokenizerState {
     /// A temporary state, used to determine if a sequence of numbers is a file descriptor (such as
     /// in the case of `echo foo 1> /dev/null`) or a regular text token.
     FileDescriptor,
-    /// A temporary state, used to identify a destination fd like in `echo foo >&2`.
-    Redirect,
     /// A temporary state, used to track the fd portion of a fd redirect, as in `echo foo>&21`
     /// (starting at the `2`).
     FdRedirect,
@@ -105,7 +103,7 @@ enum TokenizerState {
     /// A temporary state indicating we are possibly completing a home directory expansion. If a
     /// tilde is followed by plain text, the entire thing is plain text but if it is followed by a
     /// character that indicates the end of a sequence/token then it is an expansion.
-    HomeDirExpansion,
+    HomeExpansion,
 }
 
 impl TokenizerState {
@@ -117,17 +115,16 @@ impl TokenizerState {
             self,
             TokenizerState::VariableName
                 | TokenizerState::FileDescriptor
-                | TokenizerState::Redirect
                 | TokenizerState::FdRedirect
                 | TokenizerState::Glob
-                | TokenizerState::HomeDirExpansion
+                | TokenizerState::HomeExpansion
         )
     }
 
     /// These states only last a single character. If we are in one of these states and the token is
     /// more than a single character, it is automatically downgraded to regular text.
     fn is_single_char_state(&self) -> bool {
-        matches!(self, TokenizerState::HomeDirExpansion)
+        matches!(self, TokenizerState::HomeExpansion)
     }
 }
 
@@ -312,7 +309,7 @@ impl<'a> Tokenizer<'a> {
                     // here, whereas TokenizerState::FdRedirect ends on whitespace so it is.
                     Some(TokenizerState::FdRedirect) => TokenType::FileDescriptor,
                     Some(TokenizerState::Glob) => TokenType::Glob,
-                    Some(TokenizerState::HomeDirExpansion) => TokenType::Username,
+                    Some(TokenizerState::HomeExpansion) => TokenType::Username,
                     _ => TokenType::Text,
                 };
                 make_token!(ttype)
@@ -390,7 +387,7 @@ impl<'a> Tokenizer<'a> {
                     if start != self.index {
                         true
                     } else {
-                        self.temp_state.take();
+                        self.temp_state = None;
                         false
                     }
                 }};
@@ -839,7 +836,7 @@ impl<'a> Tokenizer<'a> {
                     // We have an actual file descriptor after entering TS::FileDescriptor upon
                     // encountering a numeric sequence above.
                     let token = make_token!(TokenType::FileDescriptor);
-                    self.temp_state.take();
+                    self.temp_state = None;
                     return Ok(token);
                     // We'll resume on '>' in TokenizerState::None
                 }
@@ -850,7 +847,6 @@ impl<'a> Tokenizer<'a> {
                     }
 
                     self.consume_char();
-                    self.temp_state = Some(TokenizerState::Redirect);
                     if read!(b'>').is_ok() {
                         // This is actually an append redirection
                         return Ok(make_token!(TokenType::Append));
@@ -865,8 +861,19 @@ impl<'a> Tokenizer<'a> {
                     }
 
                     self.consume_char();
-                    self.temp_state = Some(TokenizerState::Redirect);
                     return Ok(make_token!(TokenType::StdinRedirection));
+                }
+                // These states have token types that must end on encountering punctuation.
+                (c, TokenizerState::VariableName) if c.is_ascii_punctuation() => {
+                    if have_fragment!() {
+                        return Ok(make_token!());
+                    }
+                }
+                // These states have token types that must end on encountering a path separator.
+                (PATH_SEPARATOR, TokenizerState::VariableName | TokenizerState::HomeExpansion) => {
+                    if have_fragment!() {
+                        return Ok(make_token!());
+                    }
                 }
                 (b'~', _) => {
                     // Fish overloads ~ in a way that it's impossible to determine at tokenization
@@ -882,17 +889,8 @@ impl<'a> Tokenizer<'a> {
 
                     self.consume_char();
                     let token = make_token!(TokenType::HomeDirExpansion);
-                    self.temp_state = Some(TokenizerState::HomeDirExpansion);
+                    self.temp_state = Some(TokenizerState::HomeExpansion);
                     return Ok(token);
-                }
-                (PATH_SEPARATOR, TokenizerState::None | TokenizerState::Glob) => {
-                    // Handle this regularly, to differentiate from the next match block below.
-                }
-                (PATH_SEPARATOR, _) => {
-                    // Make sure we end all special states on a path separator
-                    if have_fragment!() {
-                        return Ok(make_token!());
-                    }
                 }
                 (b'*', _) => {
                     // This isn't just regular text, it's a glob/expansion. Don't start a new token,
