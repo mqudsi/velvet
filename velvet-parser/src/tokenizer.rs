@@ -46,6 +46,9 @@ pub struct Tokenizer<'a> {
     /// The token to be returned the next time around, before the main tokenizer loop is called.
     /// Always unset when used.
     cached_token: Option<Token<'a>>,
+    /// Set in [`Tokenier::read_next()`] each time [`Tokenizer::read_next_inner()`] returns a valid
+    /// token.
+    last_token_type: Option<TokenType>,
     index: usize,
     line: u32,
     col: u32,
@@ -128,7 +131,7 @@ impl TokenizerState {
     }
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum TokenType {
     Text,
     DoubleQuote,
@@ -232,6 +235,7 @@ impl<'a> Tokenizer<'a> {
             line: 1,
             col: 1,
             cached_token: None,
+            last_token_type: None,
         }
     }
 
@@ -292,7 +296,18 @@ impl<'a> Tokenizer<'a> {
         self.col += 1;
     }
 
+    /// A wrapper around [`Tokenizer::read_next()`] that updates the internal state with the latest
+    /// returned token type.
     fn read_next(&mut self) -> Result<Token<'a>, TokenizerError> {
+        let result = self.read_next_inner();
+        if let &Ok(ref token) = &result {
+            self.last_token_type = Some(token.ttype.clone());
+        }
+        result
+    }
+
+    #[inline(always)]
+    fn read_next_inner(&mut self) -> Result<Token<'a>, TokenizerError> {
         if let Some(token) = self.cached_token.take() {
             return Ok(token);
         }
@@ -792,6 +807,7 @@ impl<'a> Tokenizer<'a> {
                         self.consume_char();
                         return Ok(make_token!(TokenType::LogicalAnd));
                     }
+                    eprintln!("& last_token_type: {:?}", &self.last_token_type);
                     if matches!(
                         self.peek(),
                         Some(b' ' | b'\r' | b'\n' | b'|' | b';' | b'<' | b'>') | None
@@ -802,7 +818,7 @@ impl<'a> Tokenizer<'a> {
                         self.consume_char();
                         return Ok(make_token!(TokenType::Backgrounding));
                     }
-                    if !have_fragment!() {
+                    if !have_fragment!() && !matches!(self.last_token_type, Some(TokenType::Text)) {
                         self.consume_char();
                         let token = make_token!(TokenType::FdRedirection);
                         // Set us up to read more numbers as an fd
@@ -826,7 +842,7 @@ impl<'a> Tokenizer<'a> {
                 (b'0'..=b'9', TokenizerState::None) => {
                     // This is possibly a file descriptor like in the case of the `1` in `echo foo 1>&2`
                     // It's only the case if the number is the start of the token.
-                    if !have_fragment!() {
+                    if !have_fragment!() && !matches!(self.last_token_type, Some(TokenType::Text)) {
                         self.temp_state = Some(TokenizerState::FileDescriptor);
                     }
                     // Otherwise just append to the existing fragment and treat as whatever
@@ -881,7 +897,7 @@ impl<'a> Tokenizer<'a> {
                     // user's home directory or be kept as plain text. We aren't going to support
                     // that and will be classifying it as an expansion or plain text definitively.
                     // See https://github.com/fish-shell/fish-shell/issues/9340
-                    if have_fragment!() {
+                    if have_fragment!() || matches!(self.last_token_type, Some(TokenType::Text)) {
                         // If it's not at the start of a string, treat it as plain text.
                         self.consume_char();
                         continue;
@@ -912,9 +928,12 @@ impl<'a> Tokenizer<'a> {
                     self.line += 1;
                     self.col = 1;
                 }
-                _ => {
+                c => {
                     self.index += 1;
                     self.col += 1;
+                    if let Some(c) = c {
+                        eprintln!("Consuming default token {} ({})", c as char, c);
+                    }
                 }
             }
 

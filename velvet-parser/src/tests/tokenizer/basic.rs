@@ -106,23 +106,66 @@ fn index_unbalanced_closing() {
 #[test]
 /// A `&` is a backgrounding token if it isn't followed by another `&` and is the last token in the
 /// input or comes before whitespace, a pipe, or a semicolon.
-fn backgrounding_symbol() {
+fn ampersand_backgrounding() {
     // These should all be detected as backgrounding symbols
     for input in [b"echo &".as_slice(), b"echo &; ..", b"echo &|"] {
         let tok = tokenize(input).nth(2).unwrap().unwrap();
         assert_eq!(tok.ttype, TokenType::Backgrounding);
         assert_eq!(&*tok.text, b"&", "Unexpected text in backgrounding symbol!");
     }
+}
 
-    // While none of these should be detected as background symbols
-    for input in [b"echo &&".as_slice(), b"echo hello&not"] {
-        let tok = tokenize(input)
-            .map(Result::unwrap)
-            .find(|tok| tok.ttype == TokenType::Backgrounding);
-        assert!(
-            matches!(tok, None),
-            "Backgrounding symbol should not have been detected!"
-        );
+#[test]
+fn ampersand_plaintext() {
+    let input = b"echo hello&not";
+    let mut tokens = tokenize(input)
+        .skip(2)
+        .map(Result::unwrap);
+
+    // Depending on whether we stick to one way of tokenizing or the other, it is fair game for the
+    // three text components "hello", "&", and "not" to be returned as one or multiple tokens.
+    while let Some(t) = tokens.next() {
+        assert_eq!(t.ttype, TokenType::Text,
+            "{}: {} tokenized as {:?} not Text!",
+            std::str::from_utf8(input).unwrap(),
+            std::str::from_utf8(&*t.text).unwrap(), t.ttype);
+    }
+}
+
+#[test]
+fn ampersand_plaintext_after_escape() {
+    let input = br#"echo hell\o&friend"#;
+    let mut tokens = tokenize(input)
+        .skip(2)
+        .map(Result::unwrap);
+
+    let text = tokens.take_while(|t| t.ttype == TokenType::Text)
+        .fold(Vec::new(), |mut acc, t| { acc.extend_from_slice(&*t.text); acc });
+    assert_eq!(text, b"hello&friend");
+}
+
+#[test]
+fn ampersand_plaintext_after_hex_escape() {
+    let input = br#"echo hell\x6F&friend"#;
+    let mut tokens = tokenize(input)
+        .skip(2)
+        .map(Result::unwrap);
+
+    let text = tokens.take_while(|t| t.ttype == TokenType::Text)
+        .fold(Vec::new(), |mut acc, t| { acc.extend_from_slice(&*t.text); acc });
+    assert_eq!(text, b"hello&friend");
+}
+
+#[test]
+/// `&&` is always a logical and operator, no matter if it is at the beginning, middle, or end of a
+/// token.
+fn ampersand_logical_and() {
+    // These should all be detected as logical and operators
+    for input in [b"echo &&".as_slice(), b"echo a&&b; ..", b"true&&false"] {
+        let tok = tokenize(input).map(Result::unwrap)
+            .find(|t| t.ttype == TokenType::LogicalAnd);
+        assert!(tok.is_some(), "Did not parse && in statement `{}` as logical and!",
+            std::str::from_utf8(input).unwrap());
     }
 }
 
