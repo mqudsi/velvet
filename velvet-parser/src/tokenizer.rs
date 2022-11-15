@@ -193,7 +193,7 @@ trait BufReaderExt {
 
 pub fn tokenize(input: &[u8]) -> impl Iterator<Item = Result<Token, TokenizerError>> {
     let tokenizer = Tokenizer::new(input);
-    tokenizer.into_iter()
+    tokenizer
 }
 
 impl<R: Read> BufReaderExt for BufReader<R> {
@@ -208,7 +208,7 @@ impl<R: Read> BufReaderExt for BufReader<R> {
             match self.read_exact(&mut buf[idx..][..1]) {
                 Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
                 Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => return Ok((idx, None)),
-                Err(e) => return Err(e.into()),
+                Err(e) => return Err(e),
                 Ok(_) => {}
             };
             match any.binary_search(&buf[idx]) {
@@ -378,6 +378,7 @@ impl<'a> Tokenizer<'a> {
                 ($pat:pat) => {
                     match self.read() {
                         None => Err(None),
+                        #[allow(clippy::redundant_pattern)]
                         Some(c @ $pat) => {
                             self.consume_char();
                             // We expect the first predicate below to be a compile-time constant
@@ -454,17 +455,15 @@ impl<'a> Tokenizer<'a> {
                                     (hex1, Some(hex2)) => {
                                         let src = &self.input[self.index - 2..][..2];
                                         let src = std::str::from_utf8(src).unwrap();
-                                        let value = u8::from_str_radix(src, 16).expect(
-                                            "We've already verified it's a valid hex value",
-                                        );
+                                        // We've already verified it's a valid hex value
+                                        let value = u8::from_str_radix(src, 16).unwrap();
                                         Cow::Owned(vec![value])
                                     }
                                     (hex1, None) => {
                                         let src = &self.input[self.index - 1..][..1];
                                         let src = std::str::from_utf8(src).unwrap();
-                                        let value = u8::from_str_radix(src, 16).expect(
-                                            "We've already verified it's a valid hex value",
-                                        );
+                                        // We've already verified it's a valid hex value
+                                        let value = u8::from_str_radix(src, 16).unwrap();
                                         Cow::Owned(vec![value])
                                     }
                                 },
