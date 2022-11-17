@@ -118,41 +118,47 @@ fn ampersand_backgrounding() {
 #[test]
 fn ampersand_plaintext() {
     let input = b"echo hello&not";
-    let mut tokens = tokenize(input)
-        .skip(2)
-        .map(Result::unwrap);
+    let mut tokens = tokenize(input).skip(2).map(Result::unwrap);
 
     // Depending on whether we stick to one way of tokenizing or the other, it is fair game for the
     // three text components "hello", "&", and "not" to be returned as one or multiple tokens.
     while let Some(t) = tokens.next() {
-        assert_eq!(t.ttype, TokenType::Text,
+        assert_eq!(
+            t.ttype,
+            TokenType::Text,
             "{}: {} tokenized as {:?} not Text!",
             std::str::from_utf8(input).unwrap(),
-            std::str::from_utf8(&*t.text).unwrap(), t.ttype);
+            std::str::from_utf8(&*t.text).unwrap(),
+            t.ttype
+        );
     }
 }
 
 #[test]
 fn ampersand_plaintext_after_escape() {
     let input = br#"echo hell\o&friend"#;
-    let mut tokens = tokenize(input)
-        .skip(2)
-        .map(Result::unwrap);
+    let mut tokens = tokenize(input).skip(2).map(Result::unwrap);
 
-    let text = tokens.take_while(|t| t.ttype == TokenType::Text)
-        .fold(Vec::new(), |mut acc, t| { acc.extend_from_slice(&*t.text); acc });
+    let text = tokens
+        .take_while(|t| t.ttype == TokenType::Text)
+        .fold(Vec::new(), |mut acc, t| {
+            acc.extend_from_slice(&*t.text);
+            acc
+        });
     assert_eq!(text, b"hello&friend");
 }
 
 #[test]
 fn ampersand_plaintext_after_hex_escape() {
     let input = br#"echo hell\x6F&friend"#;
-    let mut tokens = tokenize(input)
-        .skip(2)
-        .map(Result::unwrap);
+    let mut tokens = tokenize(input).skip(2).map(Result::unwrap);
 
-    let text = tokens.take_while(|t| t.ttype == TokenType::Text)
-        .fold(Vec::new(), |mut acc, t| { acc.extend_from_slice(&*t.text); acc });
+    let text = tokens
+        .take_while(|t| t.ttype == TokenType::Text)
+        .fold(Vec::new(), |mut acc, t| {
+            acc.extend_from_slice(&*t.text);
+            acc
+        });
     assert_eq!(text, b"hello&friend");
 }
 
@@ -162,10 +168,14 @@ fn ampersand_plaintext_after_hex_escape() {
 fn ampersand_logical_and() {
     // These should all be detected as logical and operators
     for input in [b"echo &&".as_slice(), b"echo a&&b; ..", b"true&&false"] {
-        let tok = tokenize(input).map(Result::unwrap)
+        let tok = tokenize(input)
+            .map(Result::unwrap)
             .find(|t| t.ttype == TokenType::LogicalAnd);
-        assert!(tok.is_some(), "Did not parse && in statement `{}` as logical and!",
-            std::str::from_utf8(input).unwrap());
+        assert!(
+            tok.is_some(),
+            "Did not parse && in statement `{}` as logical and!",
+            std::str::from_utf8(input).unwrap()
+        );
     }
 }
 
@@ -207,8 +217,7 @@ fn variable_index() {
 #[test]
 /// Verify variables are ended at certain symbols.
 fn variable_path_separated() {
-    let mut tokens = tokenize(b"foo/$var1/$var2/$bar.txt")
-        .map(Result::unwrap);
+    let mut tokens = tokenize(b"foo/$var1/$var2/$bar.txt").map(Result::unwrap);
 
     let token = tokens.next().unwrap();
     assert_eq!(token.ttype, TokenType::Text);
@@ -251,8 +260,7 @@ fn variable_path_separated() {
 #[test]
 /// Verify variables are ended at certain symbols.
 fn variable_quote_interpolation() {
-    let mut tokens = tokenize(br#"$foo"quoted$var"$bar"#)
-        .map(Result::unwrap);
+    let mut tokens = tokenize(br#"$foo"quoted$var"$bar"#).map(Result::unwrap);
 
     let token = tokens.next().unwrap();
     assert_eq!(token.ttype, TokenType::Dollar);
@@ -590,4 +598,23 @@ fn expansion_tilde_not_home_dir() {
     let token = tokenize(b"he~llo").next().unwrap().unwrap();
     assert_eq!(token.ttype, TokenType::Text);
     assert_eq!(&*token.text, b"he~llo");
+}
+
+#[test]
+/// Test the functionality of [`UnifiedTokenIterator`] and ensure it correctly concatenates adjacent
+/// text tokens not separated by whitespace.
+fn unified_token_iterator() {
+    let input = br#"he\llo"#;
+    let mut tokens = tokenize(input);
+    // "he" should be one token and the unnecessarily-escaped "l" should be prepended to the
+    // remainder of the letters.
+    assert_eq!(tokens.count(), 2);
+
+    // Now verify that unification works and returns the expected results.
+    let mut tokens = tokenize(input).unified().map(Result::unwrap);
+    let token = tokens.next().unwrap();
+    assert_eq!(token.ttype, TokenType::Text);
+    assert_eq!(&*token.text, b"hello");
+
+    assert!(tokens.next().is_none());
 }

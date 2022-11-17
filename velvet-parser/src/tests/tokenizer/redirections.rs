@@ -242,11 +242,20 @@ fn redirect_not_an_fd() {
 
 #[test]
 fn redirect_not_from_fd() {
-    let mut tokens = tokenize(b"echo e&2>/dev/tty").map(Result::unwrap).skip(2).peekable();
+    let mut tokens = tokenize(b"echo e&2>/dev/tty")
+        .map(Result::unwrap)
+        .skip(2)
+        .peekable();
 
     // Depending on how we are tokenizing, we may get "e&2" as one text token or as two or three.
     let mut text = Vec::with_capacity(3);
-    while matches!(tokens.peek(), Some(Token { ttype: TokenType::Text, .. })) {
+    while matches!(
+        tokens.peek(),
+        Some(Token {
+            ttype: TokenType::Text,
+            ..
+        })
+    ) {
         let t = tokens.next().unwrap();
         text.extend_from_slice(&*t.text);
     }

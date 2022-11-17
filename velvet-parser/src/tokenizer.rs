@@ -1,5 +1,3 @@
-#![allow(unused)]
-
 use std::borrow::Cow;
 use std::io::prelude::*;
 use std::io::{BufRead, BufReader};
@@ -22,14 +20,6 @@ impl core::fmt::Debug for Token<'_> {
             .field("position", &format!("{}:{}", self.line, self.col))
             .finish()
     }
-}
-
-#[derive(Debug, PartialEq)]
-pub enum TokenTag {
-    None,
-    /// Indicates that this is a partial token that must be concatenated with the previous token
-    /// (and any subsequent adjacent [`TokenTag::Continuation`] tokens) to form a full token.
-    Continuation,
 }
 
 pub struct Tokenizer<'a> {
@@ -191,7 +181,7 @@ trait BufReaderExt {
     ) -> std::io::Result<(usize, Option<u8>)>;
 }
 
-pub fn tokenize(input: &[u8]) -> impl Iterator<Item = Result<Token, TokenizerError>> {
+pub fn tokenize<'a>(input: &'a [u8]) -> Tokenizer<'a> {
     let tokenizer = Tokenizer::new(input);
     tokenizer
 }
@@ -981,3 +971,51 @@ impl std::fmt::Display for TokenizerError {
 }
 
 impl std::error::Error for TokenizerError {}
+
+pub(crate) trait UnifiedTokens {
+    type Output;
+
+    fn unified(self) -> Self::Output;
+}
+
+pub(crate) struct UnifiedTokenIterator<'a, I>
+where I: Iterator<Item = Result<Token<'a>, TokenizerError>> {
+    source: std::iter::Peekable<I>,
+}
+
+impl<'a, I> UnifiedTokens for I
+where I : Iterator<Item = Result<Token<'a>, TokenizerError>> {
+    type Output = UnifiedTokenIterator<'a, I>;
+
+    fn unified(self) -> Self::Output {
+        UnifiedTokenIterator {
+            source: self.peekable()
+        }
+    }
+}
+
+impl<'a, I> Iterator for UnifiedTokenIterator<'a, I>
+where I :Iterator<Item = Result<Token<'a>, TokenizerError>> {
+    type Item = Result<Token<'a>, TokenizerError>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let first = self.source.next();
+        match self.source.peek() {
+            Some(Ok(Token { ttype: TokenType::Text, .. })) => {
+                let mut first = first.unwrap().unwrap();
+                let mut text = first.text.into_owned();
+                while matches!(self.source.peek(), Some(Ok(Token { ttype: TokenType::Text, .. }))) {
+                    let mut t = self.source.next().unwrap().unwrap();
+                    match t.text {
+                        Cow::Owned(mut t) => text.append(&mut t),
+                        Cow::Borrowed(t) => text.extend_from_slice(t),
+                    }
+                    t.text = Cow::Borrowed(b"".as_slice());
+                }
+                first.text = Cow::Owned(text);
+                Some(Ok(first))
+            },
+            _ => first,
+        }
+    }
+}
