@@ -1,6 +1,6 @@
 use std::borrow::Cow;
 use std::io::prelude::*;
-use std::io::{BufRead, BufReader};
+use std::io::BufReader;
 
 /// The path separator to recognize and use for tokenization purposes.
 const PATH_SEPARATOR: u8 = b'/';
@@ -304,7 +304,6 @@ impl<'a> Tokenizer<'a> {
 
         let mut loc = (self.line, self.col);
         let mut start = self.index;
-        let mut is_escape = false;
 
         macro_rules! make_token {
             () => {{
@@ -336,7 +335,10 @@ impl<'a> Tokenizer<'a> {
                 debug_assert!(
                     self.state.last().is_none() || !self.state.last().unwrap().is_temp_state()
                 );
-                start = self.index;
+                {
+                    #![allow(unused_assignments)]
+                    start = self.index;
+                }
                 token
             }};
         }
@@ -350,7 +352,6 @@ impl<'a> Tokenizer<'a> {
                 loc.1
             );
         }
-        let mut skip_char = false;
         loop {
             if self.index == self.input.len() {
                 if start == self.index {
@@ -378,6 +379,7 @@ impl<'a> Tokenizer<'a> {
                             }
                             Ok(c)
                         }
+                        #[allow(unreachable_patterns)]
                         Some(c) => Err(Some(c)),
                     }
                 };
@@ -397,9 +399,8 @@ impl<'a> Tokenizer<'a> {
                         false
                     }
                 }};
-            };
+            }
 
-            let mut special_case = true;
             let c = self.input[self.index];
             eprintln!("c: {}, state: {:?}", c as char, self.state());
             match (c, self.state()) {
@@ -424,7 +425,7 @@ impl<'a> Tokenizer<'a> {
                         b't' => b'\t',
                         b'x' | b'X' => {
                             // Read a one or two-digit hex sequence
-                            let hex1 = match read!(hex) {
+                            let _hex1 = match read!(hex) {
                                 Ok(hex) => hex,
                                 Err(None) => {
                                     return self.error(ErrorKind::InvalidEscape, 2, -2);
@@ -441,15 +442,15 @@ impl<'a> Tokenizer<'a> {
 
                             return Ok(Token {
                                 ttype: TokenType::Text,
-                                text: match (hex1, hex2) {
-                                    (hex1, Some(hex2)) => {
+                                text: match hex2 {
+                                    Some(_) => {
                                         let src = &self.input[self.index - 2..][..2];
                                         let src = std::str::from_utf8(src).unwrap();
                                         // We've already verified it's a valid hex value
                                         let value = u8::from_str_radix(src, 16).unwrap();
                                         Cow::Owned(vec![value])
                                     }
-                                    (hex1, None) => {
+                                    None => {
                                         let src = &self.input[self.index - 1..][..1];
                                         let src = std::str::from_utf8(src).unwrap();
                                         // We've already verified it's a valid hex value
@@ -614,7 +615,7 @@ impl<'a> Tokenizer<'a> {
                             }
                             continue;
                         }
-                        c => {
+                        _ => {
                             // The escape evaluates to the next character itself.
                             // Instead of returning a single character as a text token, just consume
                             // the character and progress the loop. The character will be the start
@@ -905,9 +906,7 @@ impl<'a> Tokenizer<'a> {
                     // when/where we'll return a TT::Glob instead.
                 }
                 _ => {
-                    // Indicate that no special case matched, allowing us to determine whether or
-                    // not to reset the internal temporary state.
-                    special_case = false;
+                    // No special treatment.
                 }
             }
 
@@ -979,32 +978,47 @@ pub(crate) trait UnifiedTokens {
 }
 
 pub(crate) struct UnifiedTokenIterator<'a, I>
-where I: Iterator<Item = Result<Token<'a>, TokenizerError>> {
+where
+    I: Iterator<Item = Result<Token<'a>, TokenizerError>>,
+{
     source: std::iter::Peekable<I>,
 }
 
 impl<'a, I> UnifiedTokens for I
-where I : Iterator<Item = Result<Token<'a>, TokenizerError>> {
+where
+    I: Iterator<Item = Result<Token<'a>, TokenizerError>>,
+{
     type Output = UnifiedTokenIterator<'a, I>;
 
     fn unified(self) -> Self::Output {
         UnifiedTokenIterator {
-            source: self.peekable()
+            source: self.peekable(),
         }
     }
 }
 
 impl<'a, I> Iterator for UnifiedTokenIterator<'a, I>
-where I :Iterator<Item = Result<Token<'a>, TokenizerError>> {
+where
+    I: Iterator<Item = Result<Token<'a>, TokenizerError>>,
+{
     type Item = Result<Token<'a>, TokenizerError>;
 
     fn next(&mut self) -> Option<Self::Item> {
         let first = self.source.next();
         match self.source.peek() {
-            Some(Ok(Token { ttype: TokenType::Text, .. })) => {
+            Some(Ok(Token {
+                ttype: TokenType::Text,
+                ..
+            })) => {
                 let mut first = first.unwrap().unwrap();
                 let mut text = first.text.into_owned();
-                while matches!(self.source.peek(), Some(Ok(Token { ttype: TokenType::Text, .. }))) {
+                while matches!(
+                    self.source.peek(),
+                    Some(Ok(Token {
+                        ttype: TokenType::Text,
+                        ..
+                    }))
+                ) {
                     let mut t = self.source.next().unwrap().unwrap();
                     match t.text {
                         Cow::Owned(mut t) => text.append(&mut t),
@@ -1014,7 +1028,7 @@ where I :Iterator<Item = Result<Token<'a>, TokenizerError>> {
                 }
                 first.text = Cow::Owned(text);
                 Some(Ok(first))
-            },
+            }
             _ => first,
         }
     }
