@@ -269,9 +269,6 @@ fn variable_quote_interpolation() {
     assert_eq!(&*token.text, b"foo");
 
     let token = tokens.next().unwrap();
-    assert_eq!(token.ttype, TokenType::DoubleQuote);
-
-    let token = tokens.next().unwrap();
     assert_eq!(token.ttype, TokenType::Text);
     assert_eq!(&*token.text, b"quoted");
     let token = tokens.next().unwrap();
@@ -279,9 +276,6 @@ fn variable_quote_interpolation() {
     let token = tokens.next().unwrap();
     assert_eq!(token.ttype, TokenType::VariableName);
     assert_eq!(&*token.text, b"var");
-
-    let token = tokens.next().unwrap();
-    assert_eq!(token.ttype, TokenType::DoubleQuote);
 
     let token = tokens.next().unwrap();
     assert_eq!(token.ttype, TokenType::Dollar);

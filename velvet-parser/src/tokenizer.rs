@@ -134,8 +134,6 @@ impl TokenizerState {
 #[derive(Clone, Debug, PartialEq)]
 pub enum TokenType {
     Text,
-    DoubleQuote,
-    SingleQuote,
     Dollar,
     IndexStart,
     SubshellStart,
@@ -649,7 +647,8 @@ impl<'a> Tokenizer<'a> {
                     }
                     self.consume_char();
                     self.state.pop();
-                    return Ok(make_token!(TokenType::DoubleQuote));
+                    start = self.index;
+                    continue;
                 }
                 (b'\'', TokenizerState::SingleQuote) => {
                     if have_fragment!() {
@@ -657,7 +656,8 @@ impl<'a> Tokenizer<'a> {
                     }
                     self.consume_char();
                     self.state.pop();
-                    return Ok(make_token!(TokenType::SingleQuote));
+                    start = self.index;
+                    continue;
                 }
                 (_, TokenizerState::SingleQuote) => {
                     // Just keep going
@@ -785,7 +785,7 @@ impl<'a> Tokenizer<'a> {
                     }
                     self.state.push(TokenizerState::DoubleQuote);
                     self.consume_char();
-                    return Ok(make_token!(TokenType::DoubleQuote));
+                    start = self.index;
                 }
                 (b'\'', _) => {
                     if have_fragment!() {
@@ -793,7 +793,7 @@ impl<'a> Tokenizer<'a> {
                     }
                     self.state.push(TokenizerState::SingleQuote);
                     self.consume_char();
-                    return Ok(make_token!(TokenType::SingleQuote));
+                    start = self.index;
                 }
                 (b'&', _) => {
                     // The ampersand is heavily overloaded and can be a backgrounding symbol, a
