@@ -455,8 +455,8 @@ fn escape_unicode_out_of_range() {
 fn escape_line_continuation() {
     let mut tokens = tokenize(b"hello cat\\\natonic").map(Result::unwrap);
 
-    let token = tokens.next().unwrap();
-    let token = tokens.next().unwrap();
+    tokens.next().unwrap();
+    tokens.next().unwrap();
     let token = tokens.next().unwrap();
     assert_eq!(token.ttype, TokenType::Text);
     assert_eq!(&*token.text, b"cat");
@@ -473,8 +473,8 @@ fn escape_line_continuation() {
 fn escape_line_continuation_whitespace() {
     let mut tokens = tokenize(b"hello cat\\\n  dog").map(Result::unwrap);
 
-    let token = tokens.next().unwrap();
-    let token = tokens.next().unwrap();
+    tokens.next().unwrap();
+    tokens.next().unwrap();
     let token = tokens.next().unwrap();
     assert_eq!(token.ttype, TokenType::Text);
     assert_eq!(&*token.text, b"cat");
@@ -496,8 +496,8 @@ fn escape_line_continuation_whitespace() {
 fn escape_cr_line_continuation() {
     let mut tokens = tokenize(b"hello cat\\\r\natonic").map(Result::unwrap);
 
-    let token = tokens.next().unwrap();
-    let token = tokens.next().unwrap();
+    tokens.next().unwrap();
+    tokens.next().unwrap();
     let token = tokens.next().unwrap();
     assert_eq!(token.ttype, TokenType::Text);
     assert_eq!(&*token.text, b"cat");

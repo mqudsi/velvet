@@ -92,7 +92,7 @@ fn subshell_unbalanced_closing() {
 /// fish does not treat it the same way it does an unbalanced closing brace or parenthesis.
 fn index_unbalanced_closing() {
     let input = b"echo ]";
-    let mut tokens = tokenize(input);
+    let tokens = tokenize(input);
 
     // It should be returned as text, not a symbol.
     let tok = tokens
@@ -137,7 +137,7 @@ fn ampersand_plaintext() {
 #[test]
 fn ampersand_plaintext_after_escape() {
     let input = br#"echo hell\o&friend"#;
-    let mut tokens = tokenize(input).skip(2).map(Result::unwrap);
+    let tokens = tokenize(input).skip(2).map(Result::unwrap);
 
     let text = tokens
         .take_while(|t| t.ttype == TokenType::Text)
@@ -151,7 +151,7 @@ fn ampersand_plaintext_after_escape() {
 #[test]
 fn ampersand_plaintext_after_hex_escape() {
     let input = br#"echo hell\x6F&friend"#;
-    let mut tokens = tokenize(input).skip(2).map(Result::unwrap);
+    let tokens = tokenize(input).skip(2).map(Result::unwrap);
 
     let text = tokens
         .take_while(|t| t.ttype == TokenType::Text)
@@ -351,8 +351,7 @@ fn dollar_no_variable_name() {
 fn dollar_subshell() {
     let mut tokens = tokenize(b"echo $(echo hi)").map(Result::unwrap);
 
-    let tok = tokens
-        .find(|t| t.ttype == TokenType::Dollar)
+    tokens.find(|t| t.ttype == TokenType::Dollar)
         .expect("Couldn't find the start of the $ expression");
 
     let tok = tokens.next().unwrap();
@@ -367,7 +366,7 @@ fn dollar_subshell() {
 #[test]
 fn cr_in_text() {
     let input = b"echo hello\rworld";
-    let mut tokens = tokenize(input).map(Result::unwrap);
+    let tokens = tokenize(input).map(Result::unwrap);
 
     let tok = tokens.last().unwrap();
     assert_eq!(tok.ttype, TokenType::Text);
@@ -377,7 +376,7 @@ fn cr_in_text() {
 #[test]
 fn cr_before_nl() {
     let input = b"echo hello\r\n";
-    let mut tokens = tokenize(input).map(Result::unwrap);
+    let tokens = tokenize(input).map(Result::unwrap);
 
     let tok = tokens.last().unwrap();
     assert_eq!(tok.ttype, TokenType::EndOfLine);
@@ -439,7 +438,7 @@ fn whitespace_leading() {
 /// Assert whitespace is always coalesced
 fn whitespace_coalesce_spaces() {
     let input = b" echo  exclude this from history   ";
-    let mut tokens = tokenize(input).map(Result::unwrap);
+    let tokens = tokenize(input).map(Result::unwrap);
 
     // Count maximum consecutive `TokenType::Whitespace` tokens
     let (max_consecutive, _) = tokens.fold((0, 0), |(max, acc), tok| match tok.ttype {
@@ -453,7 +452,7 @@ fn whitespace_coalesce_spaces() {
 /// Assert whitespace is always coalesced
 fn whitespace_coalesce_lines() {
     let input = b"echo alpha\n\necho bravo\necho charlie";
-    let mut tokens = tokenize(input).map(Result::unwrap);
+    let tokens = tokenize(input).map(Result::unwrap);
 
     // Count maximum consecutive `TokenType::EndOfLine` tokens
     let (max_consecutive, _) = tokens.fold((0, 0), |(max, acc), tok| match tok.ttype {
@@ -605,7 +604,7 @@ fn expansion_tilde_not_home_dir() {
 /// text tokens not separated by whitespace.
 fn unified_token_iterator() {
     let input = br#"he\llo"#;
-    let mut tokens = tokenize(input);
+    let tokens = tokenize(input);
     // "he" should be one token and the unnecessarily-escaped "l" should be prepended to the
     // remainder of the letters.
     assert_eq!(tokens.count(), 2);
@@ -617,4 +616,99 @@ fn unified_token_iterator() {
     assert_eq!(&*token.text, b"hello");
 
     assert!(tokens.next().is_none());
+}
+
+#[test]
+fn comment_trailing_regular() {
+    let input = b"hello # world";
+    let mut tokens = tokenize(input).map(Result::unwrap);
+
+    let token = tokens.next().unwrap();
+    assert_eq!(token.ttype, TokenType::Text);
+    assert_eq!(&*token.text, b"hello");
+
+    let token = tokens.next().unwrap();
+    assert_eq!(token.ttype, TokenType::Whitespace);
+
+    let token = tokens.next().unwrap();
+    assert_eq!(token.ttype, TokenType::Comment);
+    assert_eq!(&*token.text, b"# world");
+}
+
+#[test]
+fn comment_trailing_newline() {
+    let input = b"hello # world\n";
+    let mut tokens = tokenize(input).map(Result::unwrap);
+
+    let token = tokens.find(|t| t.ttype == TokenType::Comment)
+        .expect("Expected to find a comment!");
+    assert_eq!(&*token.text, b"# world");
+
+    let token = tokens.next().unwrap();
+    assert_eq!(token.ttype, TokenType::EndOfLine);
+    assert_eq!(&*token.text, b"\n");
+}
+
+#[test]
+fn comment_not_mid_word() {
+    let input = b"echo hello#world";
+    let token = tokenize(input).map(Result::unwrap)
+        .last().unwrap();
+
+    assert_eq!(token.ttype, TokenType::Text);
+    assert_eq!(&*token.text, b"hello#world");
+}
+
+#[test]
+fn comment_not_in_quotes() {
+    let token = tokenize(br#"echo "hello world #""#)
+        .map(Result::unwrap)
+        .skip(1)
+        .find(|t| t.ttype == TokenType::Text)
+        .unwrap();
+    assert_eq!(&*token.text, b"hello world #");
+}
+
+#[test]
+fn comment_after_operator() {
+    let token = tokenize(b"echo foo;#hello")
+        .map(Result::unwrap)
+        .last()
+        .unwrap();
+    assert_eq!(token.ttype, TokenType::Comment);
+    assert_eq!(&*token.text, b"#hello");
+}
+
+#[test]
+fn comment_after_implicit_continuation() {
+    let mut tokens = tokenize(b"echo foo |\n # comment \ncat -")
+        .map(Result::unwrap)
+        .skip(4);
+
+    let token = tokens.next().unwrap();
+    assert_eq!(token.ttype, TokenType::Pipe);
+    let token = tokens.next().unwrap();
+    assert_eq!(token.ttype, TokenType::EndOfLine);
+    let token = tokens.next().unwrap();
+    assert_eq!(token.ttype, TokenType::Whitespace);
+    let token = tokens.next().unwrap();
+    assert_eq!(token.ttype, TokenType::Comment);
+    assert_eq!(&*token.text, b"# comment ");
+    let token = tokens.next().unwrap();
+    assert_eq!(token.ttype, TokenType::EndOfLine);
+    let token = tokens.next().unwrap();
+    assert_eq!(token.ttype, TokenType::Text);
+    assert_eq!(&*token.text, b"cat");
+}
+
+#[test]
+fn comment_not_when_escaped() {
+    let token = tokenize(br#"echo \#foo"#)
+        .map(Result::unwrap)
+        .skip(2)
+        .next()
+        .unwrap();
+
+    assert_eq!(token.ttype, TokenType::Text);
+    assert_eq!(&*token.text, b"#foo");
 }

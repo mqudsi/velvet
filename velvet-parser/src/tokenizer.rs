@@ -97,6 +97,9 @@ enum TokenizerState {
     /// tilde is followed by plain text, the entire thing is plain text but if it is followed by a
     /// character that indicates the end of a sequence/token then it is an expansion.
     HomeExpansion,
+    /// A comment starts at \b# and continues until the end of the line. It doesn't support line
+    /// continuations.
+    Comment,
 }
 
 impl TokenizerState {
@@ -114,10 +117,17 @@ impl TokenizerState {
         )
     }
 
+    #[inline]
     /// These states only last a single character. If we are in one of these states and the token is
     /// more than a single character, it is automatically downgraded to regular text.
     fn is_single_char_state(&self) -> bool {
         matches!(self, TokenizerState::HomeExpansion)
+    }
+
+    #[inline]
+    /// Non-temporary states that we must manually end when a new line is encountered.
+    fn ends_on_new_line(&self) -> bool {
+        matches!(self, TokenizerState::Comment)
     }
 }
 
@@ -148,6 +158,7 @@ pub enum TokenType {
     StdinRedirection,
     /// Coalesced whitespace. Currently just spaces.
     Whitespace,
+    /// The comment, starting with the literal `#` and continuing until the end of the line.
     Comment,
     Backgrounding,
     /// Either a literal `&&` or a literal `and`.
@@ -683,20 +694,6 @@ impl<'a> Tokenizer<'a> {
                     self.consume_char();
                     return Ok(make_token!(TokenType::IndexStart));
                 }
-                (b'(' | b'{' | b'[', _) => {
-                    if have_fragment!() {
-                        return Ok(make_token!());
-                    }
-                    self.consume_char();
-                    let (ttype, state) = match c {
-                        b'(' => (TokenType::SubshellStart, TokenizerState::Subshell),
-                        b'{' => (TokenType::BraceStart, TokenizerState::Brace),
-                        b'[' => (TokenType::IndexStart, TokenizerState::Index),
-                        _ => unreachable!(),
-                    };
-                    self.state.push(state);
-                    return Ok(make_token!(ttype));
-                }
                 (b')', TokenizerState::Subshell)
                 | (b'}', TokenizerState::Brace)
                 | (b']', TokenizerState::Index) => {
@@ -718,6 +715,20 @@ impl<'a> Tokenizer<'a> {
                         self.cached_token = Some(make_token!(TokenType::IndexStart));
                     }
                     return Ok(closing_symbol);
+                }
+                (b'(' | b'{' | b'[', _) => {
+                    if have_fragment!() {
+                        return Ok(make_token!());
+                    }
+                    self.consume_char();
+                    let (ttype, state) = match c {
+                        b'(' => (TokenType::SubshellStart, TokenizerState::Subshell),
+                        b'{' => (TokenType::BraceStart, TokenizerState::Brace),
+                        b'[' => (TokenType::IndexStart, TokenizerState::Index),
+                        _ => unreachable!(),
+                    };
+                    self.state.push(state);
+                    return Ok(make_token!(ttype));
                 }
                 // fish treats an unmatched `]` differently from an unmatched `}` or `]`;
                 // specifically, it is not an error but rather regular text.
@@ -746,13 +757,13 @@ impl<'a> Tokenizer<'a> {
                 (b'\r', _) => {
                     if self.peek() == Some(b'\n') {
                         if have_fragment!() {
-                            return Ok(make_token!(TokenType::Text));
+                            return Ok(make_token!());
                         }
                         // We can merge the \r into the \n and treat as TT::EndOfLine
                         while read!(b'\r' | b'\n').is_ok() {}
                         return Ok(make_token!(TokenType::EndOfLine));
                     }
-                    // Otherwise append the \r to whatever text comes next
+                    // Otherwise concatenate the \r to whatever text comes before/after
                 }
                 (b'\n', _) => {
                     if have_fragment!() {
@@ -868,6 +879,22 @@ impl<'a> Tokenizer<'a> {
 
                     self.consume_char();
                     return Ok(make_token!(TokenType::StdinRedirection));
+                }
+                (b'#', _) => {
+                    // A comment only starts if we're not in the middle of a token and continues
+                    // until EOL or EOF, without supporting continuations. Since we have no facility
+                    // for comment contents to be retrieved, we also won't handle escapes, \r, etc.
+                    if have_fragment!() || matches!(self.last_token_type, Some(TokenType::Text)) {
+                        // Comment comes in the middle of text, so we're going to consider this to
+                        // be regular text appended/prepended to whatever was before/comes after.
+                        self.consume_char();
+                        continue;
+                    }
+
+                    while !matches!(self.read(), None | Some(b'\n')) {
+                        self.consume_char();
+                    }
+                    return Ok(make_token!(TokenType::Comment));
                 }
                 // These states have token types that must end on encountering punctuation.
                 (c, TokenizerState::VariableName) if c.is_ascii_punctuation() => {
