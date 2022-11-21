@@ -193,7 +193,7 @@ fn variable_name() {
 }
 
 #[test]
-/// Make sure that the entirety of a variable name containing a string is returned as a variable
+/// Make sure that the entirety of a variable name containing an escape is returned as a variable
 /// name, e.g. `echo $fo\o` and `echo $foo` should be identical.
 fn variable_name_escapes() {
     let input = br#"echo $fo\o"#;
@@ -205,6 +205,59 @@ fn variable_name_escapes() {
     let tok = tokens.next().unwrap();
     assert_eq!(tok.ttype, TokenType::VariableName);
     assert_eq!(&*tok.text, b"foo");
+}
+
+#[test]
+/// Make sure that a variable name starting with an escape is treated the same as a variable with
+/// the same name not escaped. e.g. `echo $\oscar` and `echo $oscar` should be identical.
+fn variable_name_escaped() {
+    let input = br#"echo $\oscar"#;
+    let mut tokens = tokenize(input).map(Result::unwrap);
+
+    let tok = tokens.nth(2).unwrap();
+    assert_eq!(tok.ttype, TokenType::Dollar);
+
+    let tok = tokens.next().unwrap();
+    assert_eq!(tok.ttype, TokenType::VariableName);
+    assert_eq!(&*tok.text, b"oscar");
+}
+
+#[test]
+/// Make sure that a variable name is ended on a literal quote rather than concatenating its text.
+/// e.g. `echo $fo"o"` should print `$fo` concatenated to `o` and not `$foo`.
+fn variable_name_double_quotes() {
+    let mut tokens = tokenize(br#"echo $fo'o'"#).map(Result::unwrap)
+        .skip(2);
+
+    let token = tokens.next().unwrap();
+    assert_eq!(token.ttype, TokenType::Dollar);
+
+    let token = tokens.next().unwrap();
+    assert_eq!(token.ttype, TokenType::VariableName);
+    assert_eq!(&*token.text, b"fo");
+
+    let token = tokens.next().unwrap();
+    assert_eq!(token.ttype, TokenType::Text);
+    assert_eq!(&*token.text, b"o");
+}
+
+#[test]
+/// Make sure that a variable name is ended on a literal quote rather than concatenating its text.
+/// e.g. `echo $fo'o'` should print `$fo` concatenated to `o` and not `$foo`.
+fn variable_name_single_quotes() {
+    let mut tokens = tokenize(br#"echo $fo'o'"#).map(Result::unwrap)
+        .skip(2);
+
+    let token = tokens.next().unwrap();
+    assert_eq!(token.ttype, TokenType::Dollar);
+
+    let token = tokens.next().unwrap();
+    assert_eq!(token.ttype, TokenType::VariableName);
+    assert_eq!(&*token.text, b"fo");
+
+    let token = tokens.next().unwrap();
+    assert_eq!(token.ttype, TokenType::Text);
+    assert_eq!(&*token.text, b"o");
 }
 
 #[test]
