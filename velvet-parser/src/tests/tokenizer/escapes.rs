@@ -4,7 +4,7 @@ use crate::tokenizer::*;
 /// Verify the behavior of general (single-char) escapes that transform the input into something
 /// else (i.e. don't return the same character).
 fn escape_basic() {
-    let mut tokens = tokenize(b"\\a").map(Result::unwrap);
+    let mut tokens = tokenize(br#"\a"#).map(Result::unwrap);
     let token = tokens.next().unwrap();
     assert_eq!(token.ttype, TokenType::Text);
     assert_eq!(&*token.text, &[0x07], "alert escape failure");
@@ -19,7 +19,7 @@ fn escape_basic() {
 
     let mut tokens = tokenize(br#" \f\e \n"#).map(Result::unwrap);
     assert_eq!(tokens.next().unwrap().ttype, TokenType::Whitespace);
-    // form feed
+    // form feed and escape
     let token = tokens.next().unwrap();
     assert!(matches!(
         token,
@@ -30,19 +30,7 @@ fn escape_basic() {
             col: 2
         }
     ));
-    assert_eq!(&*token.text, &[0x0c]);
-    // escape
-    let token = tokens.next().unwrap();
-    assert!(matches!(
-        token,
-        Token {
-            ttype: TokenType::Text,
-            text: _,
-            line: 1,
-            col: 4
-        }
-    ));
-    assert_eq!(&*token.text, &[0x1b]);
+    assert_eq!(&*token.text, &[0x0c, 0x1b]);
     // space
     assert_eq!(tokens.next().unwrap().ttype, TokenType::Whitespace);
     // new line
@@ -91,16 +79,11 @@ fn escape_hex() {
     // Lowercase \x escape
     let token = tokens.next().unwrap();
     assert_eq!(token.ttype, TokenType::Text);
-    assert_eq!(&*token.text, b"\x42");
+    assert_eq!(&token.text[..1], b"\x42");
+    // Uppercase \X escape
+    assert_eq!(&token.text[1..], b"\xFF");
     assert_eq!(token.line, 1);
     assert_eq!(token.col, 1);
-
-    // Uppercase \X escape
-    let token = tokens.next().unwrap();
-    assert_eq!(token.ttype, TokenType::Text);
-    assert_eq!(&*token.text, b"\xFF");
-    assert_eq!(token.line, 1);
-    assert_eq!(token.col, 5);
 
     // Whitespace
     let token = tokens.next().unwrap();
@@ -124,29 +107,9 @@ fn escape_hex_adjacent() {
     // Uppercase \X escape + non-hex second digit
     let token = tokens.next().unwrap();
     assert_eq!(token.ttype, TokenType::Text);
-    assert_eq!(&*token.text, b"\x04");
+    assert_eq!(&*token.text, b"\x04z\x1Fbanana");
     assert_eq!(token.line, 1);
     assert_eq!(token.col, 1);
-
-    // The z in between the two hex escapes
-    let token = tokens.next().unwrap();
-    assert_eq!(token.ttype, TokenType::Text);
-    assert_eq!(&*token.text, b"z");
-    assert_eq!(token.col, 4);
-
-    // Lowercase \x escape + hex-like third digit
-    let token = tokens.next().unwrap();
-    assert_eq!(token.ttype, TokenType::Text);
-    assert_eq!(&*token.text, b"\x1F");
-    assert_eq!(token.line, 1);
-    assert_eq!(token.col, 5);
-
-    // Trailing text
-    let token = tokens.next().unwrap();
-    assert_eq!(token.ttype, TokenType::Text);
-    assert_eq!(&*token.text, b"banana");
-    assert_eq!(token.line, 1);
-    assert_eq!(token.col, 9);
 
     assert!(tokens.next().is_none());
 }
@@ -194,15 +157,10 @@ fn escape_octal_adjacent() {
 
     let token = tokens.next().unwrap();
     assert_eq!(token.ttype, TokenType::Text);
-    assert_eq!(&*token.text, &[0o123]);
+    assert_eq!(token.text[0], 0o123);
+    assert_eq!(&token.text[1..], b"4");
     assert_eq!(token.line, 1);
     assert_eq!(token.col, 1);
-
-    let token = tokens.next().unwrap();
-    assert_eq!(token.ttype, TokenType::Text);
-    assert_eq!(&*token.text, b"4");
-    assert_eq!(token.line, 1);
-    assert_eq!(token.col, 5);
 
     assert!(tokens.next().is_none());
 }
@@ -213,15 +171,10 @@ fn escape_octal_short() {
 
     let token = tokens.next().unwrap();
     assert_eq!(token.ttype, TokenType::Text);
-    assert_eq!(&*token.text, &[0o12]);
+    assert_eq!(token.text[0], 0o12);
+    assert_eq!(&token.text[1..], b"9");
     assert_eq!(token.line, 1);
     assert_eq!(token.col, 1);
-
-    let token = tokens.next().unwrap();
-    assert_eq!(token.ttype, TokenType::Text);
-    assert_eq!(&*token.text, b"9");
-    assert_eq!(token.line, 1);
-    assert_eq!(token.col, 4);
 
     assert!(tokens.next().is_none());
 }
@@ -289,15 +242,9 @@ fn escape_unicode_four_adjacent() {
 
     let token = tokens.next().unwrap();
     assert_eq!(token.ttype, TokenType::Text);
-    assert_eq!(&*token.text, "\u{1234}".as_bytes());
+    assert_eq!(&*token.text, "\u{1234}56".as_bytes());
     assert_eq!(token.line, 1);
     assert_eq!(token.col, 1);
-
-    let token = tokens.next().unwrap();
-    assert_eq!(token.ttype, TokenType::Text);
-    assert_eq!(&*token.text, b"56");
-    assert_eq!(token.line, 1);
-    assert_eq!(token.col, 7);
 }
 
 #[test]
@@ -307,15 +254,9 @@ fn escape_unicode_four_short() {
 
     let token = tokens.next().unwrap();
     assert_eq!(token.ttype, TokenType::Text);
-    assert_eq!(&*token.text, "\u{123}".as_bytes());
+    assert_eq!(&*token.text, "\u{123}go".as_bytes());
     assert_eq!(token.line, 1);
     assert_eq!(token.col, 1);
-
-    let token = tokens.next().unwrap();
-    assert_eq!(token.ttype, TokenType::Text);
-    assert_eq!(&*token.text, b"go");
-    assert_eq!(token.line, 1);
-    assert_eq!(token.col, 6);
 }
 
 #[test]
@@ -365,15 +306,9 @@ fn escape_unicode_eight_adjacent() {
 
     let token = tokens.next().unwrap();
     assert_eq!(token.ttype, TokenType::Text);
-    assert_eq!(&*token.text, "\u{10FFFF}".as_bytes());
     assert_eq!(token.line, 1);
     assert_eq!(token.col, 1);
-
-    let token = tokens.next().unwrap();
-    assert_eq!(token.ttype, TokenType::Text);
-    assert_eq!(&*token.text, b"ABC");
-    assert_eq!(token.line, 1);
-    assert_eq!(token.col, 11);
+    assert_eq!(&*token.text, "\u{10FFFF}ABC".as_bytes());
 }
 
 #[test]
@@ -383,15 +318,9 @@ fn escape_unicode_eight_short() {
 
     let token = tokens.next().unwrap();
     assert_eq!(token.ttype, TokenType::Text);
-    assert_eq!(&*token.text, "\u{12345}".as_bytes());
+    assert_eq!(&*token.text, "\u{12345}go".as_bytes());
     assert_eq!(token.line, 1);
     assert_eq!(token.col, 1);
-
-    let token = tokens.next().unwrap();
-    assert_eq!(token.ttype, TokenType::Text);
-    assert_eq!(&*token.text, b"go");
-    assert_eq!(token.line, 1);
-    assert_eq!(token.col, 8);
 }
 
 #[test]

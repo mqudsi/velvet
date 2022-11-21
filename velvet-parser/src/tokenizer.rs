@@ -39,6 +39,9 @@ pub struct Tokenizer<'a> {
     /// Set in [`Tokenier::read_next()`] each time [`Tokenizer::read_next_inner()`] returns a valid
     /// token.
     last_token_type: Option<TokenType>,
+    /// A buffer that's used if we need to return multiple contiguous ranges coalesced into one
+    /// token. It is reset to `None` on each invocation of [`Tokenizer::read_next()`].
+    buffer: Option<Cow<'a, [u8]>>,
     index: usize,
     line: u32,
     col: u32,
@@ -230,6 +233,7 @@ impl<'a> Tokenizer<'a> {
             input: source,
             state: Vec::new(),
             temp_state: None,
+            buffer: None,
             index: 0,
             line: 1,
             col: 1,
@@ -273,6 +277,22 @@ impl<'a> Tokenizer<'a> {
         }
     }
 
+    #[inline]
+    /// Appends a range of the current input to the internal buffer. If the buffer has not yet been
+    /// initialized (i.e. this is the first specially-crafted input this loop), the passed input is
+    /// copied to a new `Vec<u8>`, otherwise it is appended to whatever is already in the buffer.
+    fn append(&mut self, input: &'a [u8]) {
+        self.buffer = Some(match self.buffer.take() {
+            Some(b) => {
+                let mut vec = b.into_owned();
+                vec.extend_from_slice(input);
+                Cow::Owned(vec)
+            }
+            None => Cow::Borrowed(input),
+        })
+    }
+
+    #[inline(never)]
     /// Returns an error pointing to the current line and column, with the column offset by the
     /// provided `offset`.
     fn error<T>(&self, kind: ErrorKind, len: usize, offset: i32) -> Result<T, TokenizerError> {
@@ -328,9 +348,20 @@ impl<'a> Tokenizer<'a> {
                 make_token!(ttype)
             }};
             ($ttype:expr) => {{
+                let text = match (self.buffer.take(), &self.input[start..self.index]) {
+                    (Some(old), b"") => old,
+                    (Some(old), new) => {
+                        let mut text = old.into_owned();
+                        text.extend_from_slice(new);
+                        Cow::Owned(text)
+                    },
+                    (None, new) => {
+                        Cow::Borrowed(new)
+                    }
+                };
                 let token = Token {
                     ttype: $ttype,
-                    text: Cow::Borrowed(&self.input[start..self.index]),
+                    text: text,
                     line: loc.0,
                     col: loc.1,
                 };
@@ -361,9 +392,10 @@ impl<'a> Tokenizer<'a> {
                 loc.1
             );
         }
+
         loop {
             if self.index == self.input.len() {
-                if start == self.index {
+                if start == self.index && self.buffer.is_none() {
                     return self.error(ErrorKind::EndOfStream, 0, 0);
                 } else {
                     return Ok(make_token!());
@@ -401,7 +433,7 @@ impl<'a> Tokenizer<'a> {
             /// reset.
             macro_rules! have_fragment {
                 () => {{
-                    if start != self.index {
+                    if start != self.index || self.buffer.is_some() {
                         true
                     } else {
                         self.temp_state = None;
@@ -415,11 +447,13 @@ impl<'a> Tokenizer<'a> {
             match (c, self.state()) {
                 // TODO: move escape handling to a function so we can keep it in cold storage
                 (b'\\', _) => {
-                    if have_fragment!() {
-                        return Ok(make_token!());
-                    }
                     if self.peek().is_none() {
                         return self.error(ErrorKind::UnterminatedEscape, 1, 0);
+                    }
+                    // Unlike other handlers, the escape handler doesn't start a new state but
+                    // rather appends to the old one.
+                    if start != self.index {
+                        self.append(&self.input[start..self.index]);
                     }
                     self.consume_char();
                     start = self.index;
@@ -449,28 +483,20 @@ impl<'a> Tokenizer<'a> {
                                 Err(_) => None,
                             };
 
-                            return Ok(Token {
-                                ttype: TokenType::Text,
-                                text: match hex2 {
-                                    Some(_) => {
-                                        let src = &self.input[self.index - 2..][..2];
-                                        let src = std::str::from_utf8(src).unwrap();
-                                        // We've already verified it's a valid hex value
-                                        let value = u8::from_str_radix(src, 16).unwrap();
-                                        Cow::Owned(vec![value])
-                                    }
-                                    None => {
-                                        let src = &self.input[self.index - 1..][..1];
-                                        let src = std::str::from_utf8(src).unwrap();
-                                        // We've already verified it's a valid hex value
-                                        let value = u8::from_str_radix(src, 16).unwrap();
-                                        Cow::Owned(vec![value])
-                                    }
-                                },
-                                line: loc.0,
-                                col: loc.1,
-                                // TODO: store the slice containing the undecoded representation
-                            });
+                            match hex2 {
+                                Some(_) => {
+                                    let src = &self.input[self.index - 2..][..2];
+                                    let src = std::str::from_utf8(src).unwrap();
+                                    // We've already verified it's a valid hex value
+                                    u8::from_str_radix(src, 16).unwrap()
+                                }
+                                None => {
+                                    let src = &self.input[self.index - 1..][..1];
+                                    let src = std::str::from_utf8(src).unwrap();
+                                    // We've already verified it's a valid hex value
+                                    u8::from_str_radix(src, 16).unwrap()
+                                }
+                            }
                         }
                         b'u' => {
                             // Read 1-4 hex digits into a 16-bit Unicode codepoint
@@ -508,13 +534,17 @@ impl<'a> Tokenizer<'a> {
                                 }
                             };
 
-                            return Ok(Token {
-                                ttype: TokenType::Text,
-                                text: Cow::Owned(String::from(codepoint).into_bytes()),
-                                line: loc.0,
-                                col: loc.1,
-                                // TODO: store the slice containing the undecoded representation
+                            let mut bytes = String::from(codepoint).into_bytes();
+                            self.buffer = Some(match self.buffer.take() {
+                                Some(b) => {
+                                    let mut text = b.into_owned();
+                                    text.append(&mut bytes);
+                                    Cow::Owned(text)
+                                },
+                                None => Cow::Owned(bytes),
                             });
+                            start = self.index;
+                            continue;
                         }
                         b'U' => {
                             // Read 1-8 hex digits into a 32-bit Unicode codepoint
@@ -550,13 +580,17 @@ impl<'a> Tokenizer<'a> {
                                 )?,
                             };
 
-                            return Ok(Token {
-                                ttype: TokenType::Text,
-                                text: Cow::Owned(String::from(codepoint).into_bytes()),
-                                line: loc.0,
-                                col: loc.1,
-                                // TODO: store the slice containing the undecoded representation
+                            let mut bytes = String::from(codepoint).into_bytes();
+                            self.buffer = Some(match self.buffer.take() {
+                                Some(b) => {
+                                    let mut text = b.into_owned();
+                                    text.append(&mut bytes);
+                                    Cow::Owned(text)
+                                },
+                                None => Cow::Owned(bytes),
                             });
+                            start = self.index;
+                            continue;
                         }
                         b'c' => {
                             // Generate the keycode for ctrl + whatever char comes next.
@@ -609,13 +643,26 @@ impl<'a> Tokenizer<'a> {
                             // A literal new line after an escape is a continuation and should be
                             // interpreted as ignoring the new line altogether (though incrementing
                             // our inner line count).
+                            if self.buffer.is_some() {
+                                self.index -= 1;
+                                let token = make_token!();
+                                self.index += 1;
+                                return Ok(token);
+                            }
                             start = self.index;
                             loc = (self.line, self.col);
                             continue;
                         }
                         b'\r' => {
                             // Treat like an escape of a literal \n if followed by one
+                            let mut token_start = self.index - 1;
                             if read!(b'\n').is_ok() {
+                                if self.buffer.is_some() {
+                                    std::mem::swap(&mut self.index, &mut token_start);
+                                    let token = make_token!();
+                                    std::mem::swap(&mut self.index, &mut token_start);
+                                    return Ok(token);
+                                }
                                 start = self.index;
                                 loc = (self.line, self.col);
                             } else {
@@ -626,20 +673,22 @@ impl<'a> Tokenizer<'a> {
                         }
                         _ => {
                             // The escape evaluates to the next character itself.
-                            // Instead of returning a single character as a text token, just consume
-                            // the character and progress the loop. The character will be the start
-                            // of a new text token.
+                            // Instead of allocating, just consume the character and progress
+                            // the loop. The character will be the start of a new token.
                             continue;
                         }
                     };
 
-                    return Ok(Token {
-                        ttype: TokenType::Text,
-                        text: Cow::Owned(vec![byte]),
-                        line: loc.0,
-                        col: loc.1,
-                        // TODO: return the input slice mapping to this text
+                    self.buffer = Some(match self.buffer.take() {
+                        Some(b) => {
+                            let mut text = b.into_owned();
+                            text.push(byte);
+                            Cow::Owned(text)
+                        },
+                        None => Cow::Owned(vec![byte]),
                     });
+                    start = self.index;
+                    continue;
                 }
                 (b'"', TokenizerState::DoubleQuote) => {
                     if have_fragment!() {

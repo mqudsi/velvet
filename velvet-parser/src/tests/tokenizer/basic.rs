@@ -193,6 +193,21 @@ fn variable_name() {
 }
 
 #[test]
+/// Make sure that the entirety of a variable name containing a string is returned as a variable
+/// name, e.g. `echo $fo\o` and `echo $foo` should be identical.
+fn variable_name_escapes() {
+    let input = br#"echo $fo\o"#;
+    let mut tokens = tokenize(input).map(Result::unwrap);
+
+    let tok = tokens.nth(2).unwrap();
+    assert_eq!(tok.ttype, TokenType::Dollar);
+
+    let tok = tokens.next().unwrap();
+    assert_eq!(tok.ttype, TokenType::VariableName);
+    assert_eq!(&*tok.text, b"foo");
+}
+
+#[test]
 fn variable_index() {
     let input = b"echo $foo[1]";
     let mut tokens = tokenize(input).map(Result::unwrap);
@@ -598,12 +613,6 @@ fn expansion_tilde_not_home_dir() {
 /// text tokens not separated by whitespace.
 fn unified_token_iterator() {
     let input = br#"he\llo"#;
-    let tokens = tokenize(input);
-    // "he" should be one token and the unnecessarily-escaped "l" should be prepended to the
-    // remainder of the letters.
-    assert_eq!(tokens.count(), 2);
-
-    // Now verify that unification works and returns the expected results.
     let mut tokens = tokenize(input).unified().map(Result::unwrap);
     let token = tokens.next().unwrap();
     assert_eq!(token.ttype, TokenType::Text);
