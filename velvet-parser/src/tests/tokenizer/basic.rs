@@ -234,8 +234,7 @@ fn variable_name_escaped() {
 /// Make sure that a variable name is ended on a literal quote rather than concatenating its text.
 /// e.g. `echo $fo"o"` should print `$fo` concatenated to `o` and not `$foo`.
 fn variable_name_double_quotes() {
-    let mut tokens = tokenize(br#"echo $fo'o'"#).map(Result::unwrap)
-        .skip(2);
+    let mut tokens = tokenize(br#"echo $fo'o'"#).map(Result::unwrap).skip(2);
 
     let token = tokens.next().unwrap();
     assert_eq!(token.ttype, TokenType::Dollar);
@@ -253,8 +252,7 @@ fn variable_name_double_quotes() {
 /// Make sure that a variable name is ended on a literal quote rather than concatenating its text.
 /// e.g. `echo $fo'o'` should print `$fo` concatenated to `o` and not `$foo`.
 fn variable_name_single_quotes() {
-    let mut tokens = tokenize(br#"echo $fo'o'"#).map(Result::unwrap)
-        .skip(2);
+    let mut tokens = tokenize(br#"echo $fo'o'"#).map(Result::unwrap).skip(2);
 
     let token = tokens.next().unwrap();
     assert_eq!(token.ttype, TokenType::Dollar);
@@ -421,7 +419,8 @@ fn dollar_no_variable_name() {
 fn dollar_subshell() {
     let mut tokens = tokenize(b"echo $(echo hi)").map(Result::unwrap);
 
-    tokens.find(|t| t.ttype == TokenType::Dollar)
+    tokens
+        .find(|t| t.ttype == TokenType::Dollar)
         .expect("Couldn't find the start of the $ expression");
 
     let tok = tokens.next().unwrap();
@@ -704,7 +703,8 @@ fn comment_trailing_newline() {
     let input = b"hello # world\n";
     let mut tokens = tokenize(input).map(Result::unwrap);
 
-    let token = tokens.find(|t| t.ttype == TokenType::Comment)
+    let token = tokens
+        .find(|t| t.ttype == TokenType::Comment)
         .expect("Expected to find a comment!");
     assert_eq!(&*token.text, b"# world");
 
@@ -716,8 +716,7 @@ fn comment_trailing_newline() {
 #[test]
 fn comment_not_mid_word() {
     let input = b"echo hello#world";
-    let token = tokenize(input).map(Result::unwrap)
-        .last().unwrap();
+    let token = tokenize(input).map(Result::unwrap).last().unwrap();
 
     assert_eq!(token.ttype, TokenType::Text);
     assert_eq!(&*token.text, b"hello#world");

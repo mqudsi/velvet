@@ -100,9 +100,6 @@ enum TokenizerState {
     /// tilde is followed by plain text, the entire thing is plain text but if it is followed by a
     /// character that indicates the end of a sequence/token then it is an expansion.
     HomeExpansion,
-    /// A comment starts at \b# and continues until the end of the line. It doesn't support line
-    /// continuations.
-    Comment,
 }
 
 impl TokenizerState {
@@ -125,12 +122,6 @@ impl TokenizerState {
     /// more than a single character, it is automatically downgraded to regular text.
     fn is_single_char_state(&self) -> bool {
         matches!(self, TokenizerState::HomeExpansion)
-    }
-
-    #[inline]
-    /// Non-temporary states that we must manually end when a new line is encountered.
-    fn ends_on_new_line(&self) -> bool {
-        matches!(self, TokenizerState::Comment)
     }
 }
 
@@ -354,10 +345,8 @@ impl<'a> Tokenizer<'a> {
                         let mut text = old.into_owned();
                         text.extend_from_slice(new);
                         Cow::Owned(text)
-                    },
-                    (None, new) => {
-                        Cow::Borrowed(new)
                     }
+                    (None, new) => Cow::Borrowed(new),
                 };
                 let token = Token {
                     ttype: $ttype,
@@ -540,7 +529,7 @@ impl<'a> Tokenizer<'a> {
                                     let mut text = b.into_owned();
                                     text.append(&mut bytes);
                                     Cow::Owned(text)
-                                },
+                                }
                                 None => Cow::Owned(bytes),
                             });
                             start = self.index;
@@ -586,7 +575,7 @@ impl<'a> Tokenizer<'a> {
                                     let mut text = b.into_owned();
                                     text.append(&mut bytes);
                                     Cow::Owned(text)
-                                },
+                                }
                                 None => Cow::Owned(bytes),
                             });
                             start = self.index;
@@ -684,7 +673,7 @@ impl<'a> Tokenizer<'a> {
                             let mut text = b.into_owned();
                             text.push(byte);
                             Cow::Owned(text)
-                        },
+                        }
                         None => Cow::Owned(vec![byte]),
                     });
                     start = self.index;
@@ -742,26 +731,32 @@ impl<'a> Tokenizer<'a> {
                     self.consume_char();
                     return Ok(make_token!(TokenType::IndexStart));
                 }
-                (b')', TokenizerState::Subshell)
-                | (b'}', TokenizerState::Brace)
-                | (b']', TokenizerState::Index) => {
+                (b')', TokenizerState::Subshell) => {
+                    if have_fragment!() {
+                        return Ok(make_token!());
+                    }
+                    self.consume_char();
+                    self.state.pop();
+                    let token = make_token!(TokenType::SubshellEnd);
+                    // The only other place a `[` is a special token.
+                    if read!(b'[').is_ok() {
+                        self.state.push(TokenizerState::Index);
+                        self.cached_token = Some(make_token!(TokenType::IndexStart));
+                    }
+                    return Ok(token);
+                }
+                (b'}', TokenizerState::Brace) | (b']', TokenizerState::Index) => {
                     if have_fragment!() {
                         return Ok(make_token!());
                     }
                     self.consume_char();
                     self.state.pop();
                     let ttype = match c {
-                        b')' => TokenType::SubshellEnd,
                         b'}' => TokenType::BraceEnd,
                         b']' => TokenType::IndexEnd,
                         _ => unreachable!(),
                     };
                     let closing_symbol = make_token!(ttype);
-                    // Make sure we don't lose out on an index start in a quoted context
-                    if c == b')' && read!(b'[').is_ok() {
-                        self.state.push(TokenizerState::Index);
-                        self.cached_token = Some(make_token!(TokenType::IndexStart));
-                    }
                     return Ok(closing_symbol);
                 }
                 (b'(' | b'{', _) => {
