@@ -715,21 +715,43 @@ impl<'a> Tokenizer<'a> {
                     }
                     return Ok(dollar);
                 }
-                (_, TokenizerState::DoubleQuote) => {
-                    // Just keep going
-                }
-                // This is one of only two places where `[` is a special token.
+                // `[` is only a special character immediately after a variable name or a subshell.
                 (b'[', TokenizerState::VariableName) => {
                     if have_fragment!() {
-                        let token = make_token!();
-                        // We need to explicitly reset the VariableName state because the default
-                        // make_token! macro pops it off our stack.
-                        self.temp_state = Some(TokenizerState::VariableName);
-                        return Ok(token);
+                        return Ok(make_token!());
                     }
-                    self.state.push(TokenizerState::Index);
-                    self.consume_char();
-                    return Ok(make_token!(TokenType::IndexStart));
+                    // TS::VariableName is automatically unset, so we just repeat instead of
+                    // consuming the char.
+                    continue;
+                }
+                (b'[', _) => {
+                    if !have_fragment!()
+                        && matches!(
+                            dbg!(&self.last_token_type),
+                            Some(TokenType::VariableName | TokenType::SubshellEnd)
+                        )
+                    {
+                        self.consume_char();
+                        self.state.push(TokenizerState::Index);
+                        return Ok(make_token!(TokenType::IndexStart));
+                    }
+                }
+                // These states have token types that must end on encountering punctuation.
+                (c, TokenizerState::VariableName) if c.is_ascii_punctuation() => {
+                    if have_fragment!() {
+                        return Ok(make_token!());
+                    }
+                }
+                // These states have token types that must end on encountering a path separator.
+                (PATH_SEPARATOR, TokenizerState::VariableName | TokenizerState::HomeExpansion) => {
+                    if have_fragment!() {
+                        return Ok(make_token!());
+                    }
+                }
+                // Make sure we've handled everything to do with TS::VariableName before we reach
+                // the ignore rule for TS::DoubleQuote.
+                (_, TokenizerState::DoubleQuote) => {
+                    // Just keep going
                 }
                 (b')', TokenizerState::Subshell) => {
                     if have_fragment!() {
@@ -737,13 +759,7 @@ impl<'a> Tokenizer<'a> {
                     }
                     self.consume_char();
                     self.state.pop();
-                    let token = make_token!(TokenType::SubshellEnd);
-                    // The only other place a `[` is a special token.
-                    if read!(b'[').is_ok() {
-                        self.state.push(TokenizerState::Index);
-                        self.cached_token = Some(make_token!(TokenType::IndexStart));
-                    }
-                    return Ok(token);
+                    return Ok(make_token!(TokenType::SubshellEnd));
                 }
                 (b'}', TokenizerState::Brace) | (b']', TokenizerState::Index) => {
                     if have_fragment!() {
@@ -756,8 +772,7 @@ impl<'a> Tokenizer<'a> {
                         b']' => TokenType::IndexEnd,
                         _ => unreachable!(),
                     };
-                    let closing_symbol = make_token!(ttype);
-                    return Ok(closing_symbol);
+                    return Ok(make_token!(ttype));
                 }
                 (b'(' | b'{', _) => {
                     if have_fragment!() {
@@ -937,18 +952,6 @@ impl<'a> Tokenizer<'a> {
                         self.consume_char();
                     }
                     return Ok(make_token!(TokenType::Comment));
-                }
-                // These states have token types that must end on encountering punctuation.
-                (c, TokenizerState::VariableName) if c.is_ascii_punctuation() => {
-                    if have_fragment!() {
-                        return Ok(make_token!());
-                    }
-                }
-                // These states have token types that must end on encountering a path separator.
-                (PATH_SEPARATOR, TokenizerState::VariableName | TokenizerState::HomeExpansion) => {
-                    if have_fragment!() {
-                        return Ok(make_token!());
-                    }
                 }
                 (b'~', _) => {
                     // Fish overloads ~ in a way that it's impossible to determine at tokenization

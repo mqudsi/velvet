@@ -289,6 +289,27 @@ fn variable_index() {
 }
 
 #[test]
+/// Verify we can handle an index into a variable if it comes after a continuation, as fish allows
+/// the same.
+fn variable_index_after_line_continuation() {
+    let mut tokens = tokenize(b"echo $foo\\\n[1]").map(Result::unwrap).skip(2);
+
+    let token = tokens.next().unwrap();
+    assert_eq!(token.ttype, TokenType::Dollar);
+    let token = tokens.next().unwrap();
+    assert_eq!(token.ttype, TokenType::VariableName);
+    assert_eq!(&*token.text, b"foo");
+
+    let token = tokens.next().unwrap();
+    assert_eq!(token.ttype, TokenType::IndexStart);
+    let token = tokens.next().unwrap();
+    assert_eq!(token.ttype, TokenType::Text);
+    assert_eq!(&*token.text, b"1");
+    let token = tokens.next().unwrap();
+    assert_eq!(token.ttype, TokenType::IndexEnd);
+}
+
+#[test]
 /// Verify variables are ended at certain symbols.
 fn variable_path_separated() {
     let mut tokens = tokenize(b"foo/$var1/$var2/$bar.txt").map(Result::unwrap);
@@ -370,6 +391,43 @@ fn quoted_variable_name() {
     let tok = tokens.next().expect("Expected a variable name!");
     assert_eq!(tok.ttype, TokenType::VariableName);
     assert_eq!(&*tok.text, b"world");
+}
+
+#[test]
+/// Document how we expect interpolated text and variables to be returned.
+fn interpolated_text_and_variable() {
+    let input = br#"echo hello\ $friend" of mine""#;
+    let mut tokens = tokenize(input).map(Result::unwrap).skip(2);
+
+    let tok = tokens.next().unwrap();
+    assert_eq!(tok.ttype, TokenType::Text);
+    assert_eq!(&*tok.text, b"hello ");
+
+    let tok = tokens.next().unwrap();
+    assert_eq!(tok.ttype, TokenType::Dollar);
+    let tok = tokens.next().unwrap();
+    assert_eq!(tok.ttype, TokenType::VariableName);
+    assert_eq!(&*tok.text, b"friend");
+    let tok = tokens.next().unwrap();
+    assert_eq!(tok.ttype, TokenType::Text);
+    assert_eq!(&*tok.text, b" of mine");
+}
+
+#[test]
+/// Ensure variable names are correctly ended in a quoted context.
+fn quoted_variable_name_ends_on_space() {
+    let input = br#"echo "hello $world friend""#;
+    let mut tokens = tokenize(input).map(Result::unwrap);
+
+    tokens
+        .find(|t| t.ttype == TokenType::Dollar)
+        .expect("Couldn't find dollar symbol in a quoted context!");
+    let tok = tokens.next().expect("Expected a variable name!");
+    assert_eq!(tok.ttype, TokenType::VariableName);
+    assert_eq!(&*tok.text, b"world");
+    let tok = tokens.next().unwrap();
+    assert_eq!(tok.ttype, TokenType::Text);
+    assert_eq!(&*tok.text, b" friend");
 }
 
 #[test]
