@@ -406,6 +406,18 @@ fn interpolated_text() {
 }
 
 #[test]
+/// Document how we expect interpolated text containing a glob to be returned.
+fn interpolated_glob() {
+    // Make sure to test the case where quotes come before and after other text.
+    let input = br#"echo "h"e*\."txt""#;
+    let mut tokens = tokenize(input).map(Result::unwrap).skip(2);
+
+    let tok = tokens.next().unwrap();
+    assert_eq!(tok.ttype, TokenType::Glob);
+    assert_eq!(&*tok.text, b"he*.txt");
+}
+
+#[test]
 /// Document how we expect interpolated text and variables to be returned.
 fn interpolated_text_and_variable() {
     let input = br#"echo hello\ $friend" of mine""#;

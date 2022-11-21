@@ -45,6 +45,9 @@ pub struct Tokenizer<'a> {
     index: usize,
     line: u32,
     col: u32,
+    /// A debug sanity check to ensure we never fall through the switch after calling
+    /// [`Tokenizer::consume_char()`].
+    char_consumed: bool,
 }
 
 #[derive(Debug)]
@@ -115,13 +118,6 @@ impl TokenizerState {
                 | TokenizerState::Glob
                 | TokenizerState::HomeExpansion
         )
-    }
-
-    #[inline]
-    /// These states only last a single character. If we are in one of these states and the token is
-    /// more than a single character, it is automatically downgraded to regular text.
-    fn is_single_char_state(&self) -> bool {
-        matches!(self, TokenizerState::HomeExpansion)
     }
 }
 
@@ -225,6 +221,7 @@ impl<'a> Tokenizer<'a> {
             state: Vec::new(),
             temp_state: None,
             buffer: None,
+            char_consumed: false,
             index: 0,
             line: 1,
             col: 1,
@@ -304,6 +301,7 @@ impl<'a> Tokenizer<'a> {
     fn consume_char(&mut self) {
         self.index += 1;
         self.col += 1;
+        self.char_consumed = true;
     }
 
     /// A wrapper around [`Tokenizer::read_next()`] that updates the internal state with the latest
@@ -390,6 +388,7 @@ impl<'a> Tokenizer<'a> {
                     return Ok(make_token!());
                 }
             }
+            self.char_consumed = false;
 
             /// A pull-based read that consumes the current character only if it is a match.
             macro_rules! read {
@@ -727,7 +726,7 @@ impl<'a> Tokenizer<'a> {
                 (b'[', _) => {
                     if !have_fragment!()
                         && matches!(
-                            dbg!(&self.last_token_type),
+                            self.last_token_type,
                             Some(TokenType::VariableName | TokenType::SubshellEnd)
                         )
                     {
@@ -843,6 +842,7 @@ impl<'a> Tokenizer<'a> {
                     self.state.push(TokenizerState::DoubleQuote);
                     self.consume_char();
                     start = self.index;
+                    continue;
                 }
                 (b'\'', _) => {
                     if have_fragment!() {
@@ -851,6 +851,7 @@ impl<'a> Tokenizer<'a> {
                     self.state.push(TokenizerState::SingleQuote);
                     self.consume_char();
                     start = self.index;
+                    continue;
                 }
                 (b'&', _) => {
                     // The ampersand is heavily overloaded and can be a backgrounding symbol, a
@@ -865,7 +866,6 @@ impl<'a> Tokenizer<'a> {
                         self.consume_char();
                         return Ok(make_token!(TokenType::LogicalAnd));
                     }
-                    eprintln!("& last_token_type: {:?}", &self.last_token_type);
                     if matches!(
                         self.peek(),
                         Some(b' ' | b'\r' | b'\n' | b'|' | b';' | b'<' | b'>') | None
@@ -879,7 +879,7 @@ impl<'a> Tokenizer<'a> {
                     if !have_fragment!() && !matches!(self.last_token_type, Some(TokenType::Text)) {
                         self.consume_char();
                         let token = make_token!(TokenType::FdRedirection);
-                        // Set us up to read more numbers as an fd
+                        // Set us up to read more numbers as an fd (e.g. `cat <&0`)
                         self.temp_state = Some(TokenizerState::FdRedirect);
                         return Ok(token);
                     }
@@ -921,12 +921,12 @@ impl<'a> Tokenizer<'a> {
                     }
 
                     self.consume_char();
-                    if read!(b'>').is_ok() {
+                    let ttype = match read!(b'>') {
                         // This is actually an append redirection
-                        return Ok(make_token!(TokenType::Append));
-                    } else {
-                        return Ok(make_token!(TokenType::Redirection));
-                    }
+                        Ok(_) => TokenType::Append,
+                        _ => TokenType::Redirection,
+                    };
+                    return Ok(make_token!(ttype));
                 }
                 (b'<', _) => {
                     // This can be only be an stdin redirection because fish doesn't support <<
@@ -981,6 +981,10 @@ impl<'a> Tokenizer<'a> {
                     // No special treatment.
                 }
             }
+
+            // We aren't allowed to ever call `consume_char()` (which a successful `read!()` calls)
+            // and also fall through the switch to here.
+            assert!(!self.char_consumed, "self.consume_char() was called!");
 
             match self.read() {
                 Some(b'\n') => {
