@@ -729,8 +729,7 @@ impl<'a> Tokenizer<'a> {
                 (_, TokenizerState::DoubleQuote) => {
                     // Just keep going
                 }
-                // We need to handle this directly to prevent the state from reverting to
-                // DoubleQuote after terminating the variable name.
+                // This is one of only two places where `[` is a special token.
                 (b'[', TokenizerState::VariableName) => {
                     if have_fragment!() {
                         let token = make_token!();
@@ -765,7 +764,7 @@ impl<'a> Tokenizer<'a> {
                     }
                     return Ok(closing_symbol);
                 }
-                (b'(' | b'{' | b'[', _) => {
+                (b'(' | b'{', _) => {
                     if have_fragment!() {
                         return Ok(make_token!());
                     }
@@ -773,7 +772,6 @@ impl<'a> Tokenizer<'a> {
                     let (ttype, state) = match c {
                         b'(' => (TokenType::SubshellStart, TokenizerState::Subshell),
                         b'{' => (TokenType::BraceStart, TokenizerState::Brace),
-                        b'[' => (TokenType::IndexStart, TokenizerState::Index),
                         _ => unreachable!(),
                     };
                     self.state.push(state);

@@ -104,6 +104,14 @@ fn index_unbalanced_closing() {
 }
 
 #[test]
+/// A raw `[` is by default plaintext, unless it comes after a variable name or a subshell.
+fn index_plaintext_opening() {
+    let token = tokenize(b"echo [").map(Result::unwrap).nth(2).unwrap();
+    assert_eq!(token.ttype, TokenType::Text);
+    assert_eq!(&*token.text, b"[");
+}
+
+#[test]
 /// A `&` is a backgrounding token if it isn't followed by another `&` and is the last token in the
 /// input or comes before whitespace, a pipe, or a semicolon.
 fn ampersand_backgrounding() {
