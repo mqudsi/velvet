@@ -394,6 +394,18 @@ fn quoted_variable_name() {
 }
 
 #[test]
+/// Document how we expect interpolated text without variables to be returned.
+fn interpolated_text() {
+    // Make sure to test the case where quotes come before and after other text.
+    let input = br#"echo "h"ello\ friend" of mine""#;
+    let mut tokens = tokenize(input).map(Result::unwrap).skip(2);
+
+    let tok = tokens.next().unwrap();
+    assert_eq!(tok.ttype, TokenType::Text);
+    assert_eq!(&*tok.text, b"hello friend of mine");
+}
+
+#[test]
 /// Document how we expect interpolated text and variables to be returned.
 fn interpolated_text_and_variable() {
     let input = br#"echo hello\ $friend" of mine""#;

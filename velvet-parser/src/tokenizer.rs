@@ -681,7 +681,7 @@ impl<'a> Tokenizer<'a> {
                 }
                 (b'"', TokenizerState::DoubleQuote) => {
                     if have_fragment!() {
-                        return Ok(make_token!());
+                        self.append(&self.input[start..self.index]);
                     }
                     self.consume_char();
                     self.state.pop();
@@ -690,7 +690,7 @@ impl<'a> Tokenizer<'a> {
                 }
                 (b'\'', TokenizerState::SingleQuote) => {
                     if have_fragment!() {
-                        return Ok(make_token!());
+                        self.append(&self.input[start..self.index]);
                     }
                     self.consume_char();
                     self.state.pop();
@@ -838,7 +838,7 @@ impl<'a> Tokenizer<'a> {
                 }
                 (b'"', _) => {
                     if have_fragment!() {
-                        return Ok(make_token!());
+                        self.append(&self.input[start..self.index]);
                     }
                     self.state.push(TokenizerState::DoubleQuote);
                     self.consume_char();
@@ -846,7 +846,7 @@ impl<'a> Tokenizer<'a> {
                 }
                 (b'\'', _) => {
                     if have_fragment!() {
-                        return Ok(make_token!());
+                        self.append(&self.input[start..self.index]);
                     }
                     self.state.push(TokenizerState::SingleQuote);
                     self.consume_char();
