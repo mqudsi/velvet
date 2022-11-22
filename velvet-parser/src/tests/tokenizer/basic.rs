@@ -312,7 +312,7 @@ fn variable_index_after_line_continuation() {
 #[test]
 /// Verify variables are ended at certain symbols.
 fn variable_path_separated() {
-    let mut tokens = tokenize(b"foo/$var1/$var2/$bar.txt").map(Result::unwrap);
+    let mut tokens = tokenize(b"foo/$var1/$var2$bar.txt").map(Result::unwrap);
 
     let token = tokens.next().unwrap();
     assert_eq!(token.ttype, TokenType::Text);
@@ -335,10 +335,6 @@ fn variable_path_separated() {
     let token = tokens.next().unwrap();
     assert_eq!(token.ttype, TokenType::VariableName);
     assert_eq!(&*token.text, b"var2");
-
-    let token = tokens.next().unwrap();
-    assert_eq!(token.ttype, TokenType::Text);
-    assert_eq!(&*token.text, b"/");
 
     let token = tokens.next().unwrap();
     assert_eq!(token.ttype, TokenType::Dollar);
@@ -420,7 +416,7 @@ fn interpolated_glob() {
 #[test]
 /// Document how we expect interpolated text and variables to be returned.
 fn interpolated_text_and_variable() {
-    let input = br#"echo hello\ $friend" of mine""#;
+    let input = br#"echo he'll'o\ $friend" of mine""#;
     let mut tokens = tokenize(input).map(Result::unwrap).skip(2);
 
     let tok = tokens.next().unwrap();
