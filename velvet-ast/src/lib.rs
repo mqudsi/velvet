@@ -125,6 +125,12 @@ pub enum BlockType<'a> {
 pub struct Command<'a> {
     /// The literal command invocation, as encountered in the input.
     pub literal: Literal<'a>,
+    /// The command was prefixed with `time` and we should report performance metrics.
+    pub is_timed: bool,
+    /// The logical decorator attached to the command, such as `not` or `and`. Not all decorators
+    /// are always valid, it is the parsers job to only construct a job with logical operators that
+    /// make sense in the context of where it is in the job/pipeline.
+    pub logical_decorator: Option<LogicalDecorator>,
     /// The decorator attached to the command, such as `builtin` or `command`.
     pub decorator: Option<Decorator>,
     /// The head as `args[0]` and any additional arguments to pass as `$argv`.
@@ -134,6 +140,13 @@ pub struct Command<'a> {
 pub enum Decorator {
     Command,
     Builtin,
+    Function,
+}
+
+pub enum LogicalDecorator {
+    Or,
+    And,
+    Not,
 }
 
 /// Where/how stdin, stdout, stderr are redirected.

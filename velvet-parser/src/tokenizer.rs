@@ -1047,65 +1047,19 @@ impl std::fmt::Display for TokenizerError {
 
 impl std::error::Error for TokenizerError {}
 
-pub(crate) trait UnifiedTokens {
-    type Output;
-
-    fn unified(self) -> Self::Output;
-}
-
-pub(crate) struct UnifiedTokenIterator<'a, I>
-where
-    I: Iterator<Item = Result<Token<'a>, TokenizerError>>,
-{
-    source: std::iter::Peekable<I>,
-}
-
-impl<'a, I> UnifiedTokens for I
-where
-    I: Iterator<Item = Result<Token<'a>, TokenizerError>>,
-{
-    type Output = UnifiedTokenIterator<'a, I>;
-
-    fn unified(self) -> Self::Output {
-        UnifiedTokenIterator {
-            source: self.peekable(),
-        }
+impl Token<'_> {
+    #[inline]
+    pub fn matches_text(&self, text: &[u8]) -> bool {
+        self.ttype == TokenType::Text && &*self.text == text
     }
-}
 
-impl<'a, I> Iterator for UnifiedTokenIterator<'a, I>
-where
-    I: Iterator<Item = Result<Token<'a>, TokenizerError>>,
-{
-    type Item = Result<Token<'a>, TokenizerError>;
+    #[inline]
+    pub fn is_text(&self) -> bool {
+        self.ttype == TokenType::Text
+    }
 
-    fn next(&mut self) -> Option<Self::Item> {
-        let first = self.source.next();
-        match self.source.peek() {
-            Some(Ok(Token {
-                ttype: TokenType::Text,
-                ..
-            })) => {
-                let mut first = first.unwrap().unwrap();
-                let mut text = first.text.into_owned();
-                while matches!(
-                    self.source.peek(),
-                    Some(Ok(Token {
-                        ttype: TokenType::Text,
-                        ..
-                    }))
-                ) {
-                    let mut t = self.source.next().unwrap().unwrap();
-                    match t.text {
-                        Cow::Owned(mut t) => text.append(&mut t),
-                        Cow::Borrowed(t) => text.extend_from_slice(t),
-                    }
-                    t.text = Cow::Borrowed(b"".as_slice());
-                }
-                first.text = Cow::Owned(text);
-                Some(Ok(first))
-            }
-            _ => first,
-        }
+    #[inline]
+    pub fn is_space(&self) -> bool {
+        self.ttype == TokenType::Whitespace
     }
 }
